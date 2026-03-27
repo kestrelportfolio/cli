@@ -1,0 +1,20 @@
+# Binary
+kestrel
+
+# OS files
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local config
+.kestrel/
+
+# Claude Code local settings (personal permissions/preferences)
+.claude/settings.local.json
+
+# Test binary
+*.test
