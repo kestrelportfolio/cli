@@ -53,3 +53,17 @@ release:
   github:
     owner: kestrelportfolio
     name: cli
+
+# Homebrew formula — auto-pushed to the tap repo on each release.
+# Requires HOMEBREW_TAP_TOKEN secret on the cli repo (a PAT with repo scope).
+brews:
+  - repository:
+      owner: kestrelportfolio
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://kestrelportfolio.com"
+    description: "Command-line interface for the Kestrel Portfolio API"
+    license: "MIT"
+    install: |
+      bin.install "kestrel"
