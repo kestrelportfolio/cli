@@ -51,9 +51,24 @@ func commandCatalog() []CommandCategory {
 					Description: "List all available commands",
 				},
 				{
+					Name:        "doctor",
+					Usage:       "kestrel doctor",
+					Description: "Check CLI health and agent integrations",
+				},
+				{
 					Name:        "version",
 					Usage:       "kestrel version",
 					Description: "Print the CLI version",
+				},
+			},
+		},
+		{
+			Category: "Agent Setup",
+			Commands: []CommandInfo{
+				{
+					Name:        "setup claude",
+					Usage:       "kestrel setup claude",
+					Description: "Install the Kestrel plugin for Claude Code",
 				},
 			},
 		},
