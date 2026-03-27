@@ -8,7 +8,7 @@ import (
 
 // Claude Code marketplace and plugin identifiers.
 const (
-	ClaudeMarketplaceSource = "kestrelportfolio/claude-plugin"
+	ClaudeMarketplaceSource = "kestrelportfolio/claude-plugins"
 	ClaudePluginKey         = "kestrel@kestrel-plugins"
 )
 
