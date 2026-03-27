@@ -32,7 +32,12 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "kestrel",
 	Short: "Kestrel Portfolio CLI",
-	Long:  `Command-line interface for the Kestrel Portfolio API. Designed for both human users and AI agents.`,
+	Long: `Command-line interface for the Kestrel Portfolio API.
+Designed for both human users and AI agents.
+
+Agent integration:
+  kestrel commands --json    Discover all available commands
+  cat SKILL.md               Read the agent skill documentation`,
 	// PersistentPreRunE runs before EVERY subcommand (like a before_action in Rails).
 	// It loads config and sets up the shared client/printer.
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
