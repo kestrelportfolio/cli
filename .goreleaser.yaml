@@ -1,0 +1,55 @@
+# GoReleaser config — builds cross-platform binaries on git tag push.
+#
+# Ruby analogy: This is like a Rakefile that builds your gem for every platform,
+# creates a GitHub Release with all the binaries, and generates a changelog —
+# all triggered by `git tag v0.1.0 && git push --tags`.
+#
+# Usage:
+#   goreleaser release --snapshot --clean   (local test, no publish)
+#   goreleaser release --clean              (real release, needs GITHUB_TOKEN)
+
+version: 2
+
+project_name: kestrel
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: .
+    binary: kestrel
+    # ldflags injects the version at build time into the Version variable.
+    # Similar to how Ruby gems set VERSION in a gemspec from a git tag.
+    ldflags:
+      - -s -w
+      - -X github.com/kestrelportfolio/kestrel-cli/internal/api.Version={{.Version}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: kestrelportfolio
+    name: cli

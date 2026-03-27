@@ -18,3 +18,9 @@ kestrel
 
 # Test binary
 *.test
+
+# GoReleaser output
+dist/
+
+# Internal planning docs
+docs/distribution-plan.md
