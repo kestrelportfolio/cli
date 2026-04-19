@@ -111,3 +111,12 @@ func (p *Printer) PaginationHint(nextPage *int, count int) {
 		fmt.Fprintf(os.Stderr, "\nShowing page results (%d total). Next page: --page %d\n", count, *nextPage)
 	}
 }
+
+// Breadcrumb prints a "next step" suggestion to stderr for humans.
+// Suppressed in JSON mode — agents discover the workflow via `kestrel commands --json`.
+func (p *Printer) Breadcrumb(msg string) {
+	if p.IsJSON() {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "→ "+msg)
+}

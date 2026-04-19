@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -87,6 +88,117 @@ func (c *Client) Get(path string, params map[string]string) (*Envelope, error) {
 			StatusCode: resp.StatusCode,
 			Message:    envelope.Error,
 			Code:       envelope.Code,
+		}
+	}
+
+	return &envelope, nil
+}
+
+// Post sends a POST with a JSON-encoded body and returns the parsed envelope.
+// Use a nil body for endpoints that expect an empty POST (e.g. /abandon).
+func (c *Client) Post(path string, body any) (*Envelope, error) {
+	return c.doJSON("POST", path, body)
+}
+
+// Patch sends a PATCH with a JSON-encoded body.
+func (c *Client) Patch(path string, body any) (*Envelope, error) {
+	return c.doJSON("PATCH", path, body)
+}
+
+// Delete sends a DELETE. Returns a nil envelope on 204 No Content.
+// Some delete endpoints return 200 with a data payload (e.g. cascade counts
+// from DELETE /documents/:id) — the envelope is populated in that case.
+func (c *Client) Delete(path string) (*Envelope, error) {
+	return c.doJSON("DELETE", path, nil)
+}
+
+// Upload sends a POST with a raw body (not JSON-encoded). Used for the
+// Basecamp-style file upload at POST /documents?name=<filename>. The caller
+// is responsible for query parameters and Content-Type.
+//
+// In Ruby/Net::HTTP terms this is like `req.body = file.read` with
+// `req['Content-Type'] = "application/pdf"`.
+func (c *Client) Upload(path string, body io.Reader, contentType string, contentLength int64) (*Envelope, error) {
+	reqURL, err := url.JoinPath(c.BaseURL, path)
+	if err != nil {
+		return nil, fmt.Errorf("building URL for %s: %w", path, err)
+	}
+
+	req, err := http.NewRequest("POST", reqURL, body)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("User-Agent", "kestrel-cli/"+Version)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", contentType)
+	req.ContentLength = contentLength
+
+	return c.sendAndDecode(req)
+}
+
+// doJSON is the shared path for POST/PATCH/DELETE with optional JSON body.
+func (c *Client) doJSON(method, path string, body any) (*Envelope, error) {
+	reqURL, err := url.JoinPath(c.BaseURL, path)
+	if err != nil {
+		return nil, fmt.Errorf("building URL for %s: %w", path, err)
+	}
+
+	var reader io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("encoding request body: %w", err)
+		}
+		reader = bytes.NewReader(buf)
+	}
+
+	req, err := http.NewRequest(method, reqURL, reader)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("User-Agent", "kestrel-cli/"+Version)
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	return c.sendAndDecode(req)
+}
+
+// sendAndDecode executes a request, decodes the standard or validation envelope,
+// and returns an APIError on any non-success.
+func (c *Client) sendAndDecode(req *http.Request) (*Envelope, error) {
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("making request to %s: %w", req.URL.Path, err)
+	}
+	defer resp.Body.Close()
+
+	// 204 No Content — success with no body. Nothing to decode.
+	if resp.StatusCode == http.StatusNoContent {
+		return nil, nil
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+
+	var envelope Envelope
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return nil, fmt.Errorf("parsing response JSON (status %d): %w", resp.StatusCode, err)
+		}
+	}
+
+	if !envelope.OK {
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Message:    envelope.Error,
+			Code:       envelope.Code,
+			Errors:     envelope.Errors,
 		}
 	}
 

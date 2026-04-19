@@ -232,6 +232,116 @@ func commandCatalog() []CommandCategory {
 			},
 		},
 		{
+			Category: "Abstraction Templates",
+			Commands: []CommandInfo{
+				{
+					Name:        "templates list",
+					Usage:       "kestrel templates list [--page N]",
+					Description: "List available abstraction templates",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "templates show",
+					Usage:       "kestrel templates show <id>",
+					Description: "Show a template with its ordered requirements",
+				},
+				{
+					Name:        "templates schema",
+					Usage:       "kestrel templates schema <id>",
+					Description: "Preview the authoring schema a template produces",
+				},
+			},
+		},
+		{
+			Category: "Abstractions",
+			Commands: []CommandInfo{
+				{
+					Name:        "abstractions list",
+					Usage:       "kestrel abstractions list [--page N]",
+					Description: "List abstractions",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "abstractions show",
+					Usage:       "kestrel abstractions show <id>",
+					Description: "Show a single abstraction with change/doc counts",
+				},
+				{
+					Name:        "abstractions create",
+					Usage:       "kestrel abstractions create --template-id N --kind greenfield|brownfield [--target-property-id N] [--target-lease-id N] [--name ...]",
+					Description: "Create a new abstraction",
+					Flags:       []string{"--template-id", "--kind", "--target-property-id", "--target-lease-id", "--name"},
+				},
+				{
+					Name:        "abstractions update",
+					Usage:       "kestrel abstractions update <id> --name ...",
+					Description: "Update an abstraction (name only)",
+					Flags:       []string{"--name"},
+				},
+				{
+					Name:        "abstractions abandon",
+					Usage:       "kestrel abstractions abandon <id>",
+					Description: "Abandon an abstraction (irreversible)",
+				},
+				{
+					Name:        "abstractions schema",
+					Usage:       "kestrel abstractions schema <id>",
+					Description: "Show the authoring schema — what this abstraction should fill in",
+				},
+				{
+					Name:        "abstractions add-doc",
+					Usage:       "kestrel abstractions add-doc <abstraction-id> <file> [--name ...]",
+					Description: "Upload a file and attach it as a source document",
+					Flags:       []string{"--name"},
+				},
+				{
+					Name:        "abstractions remove-doc",
+					Usage:       "kestrel abstractions remove-doc <abstraction-id> --document-id N",
+					Description: "Destroy a source document (cascade-removes join and pending citing changes)",
+					Flags:       []string{"--document-id"},
+				},
+				{
+					Name:        "abstractions sources",
+					Usage:       "kestrel abstractions sources <abstraction-id> [--page N]",
+					Description: "List source documents attached to an abstraction",
+					Flags:       []string{"--page"},
+				},
+			},
+		},
+		{
+			Category: "Abstraction Changes",
+			Commands: []CommandInfo{
+				{
+					Name:        "abstractions changes list",
+					Usage:       "kestrel abstractions changes list <abstraction-id> [--page N]",
+					Description: "List staged changes on an abstraction",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "abstractions changes show",
+					Usage:       "kestrel abstractions changes show <abstraction-id> <change-id>",
+					Description: "Show a change with payload, field metadata, and source links",
+				},
+				{
+					Name:        "abstractions changes create",
+					Usage:       "kestrel abstractions changes create <abstraction-id> --action ... --target-type ... --payload ...",
+					Description: "Create or upsert a staged change",
+					Flags:       []string{"--action", "--target-type", "--target-id", "--target-field", "--sub-object-group", "--parent-change-id", "--revised-from-id", "--payload", "--source-links"},
+				},
+				{
+					Name:        "abstractions changes update",
+					Usage:       "kestrel abstractions changes update <abstraction-id> <change-id> [--payload ...] [--source-links ...]",
+					Description: "Update a change's payload or source links (API-sourced pending/rejected only)",
+					Flags:       []string{"--payload", "--source-links"},
+				},
+				{
+					Name:        "abstractions changes delete",
+					Usage:       "kestrel abstractions changes delete <abstraction-id> <change-id>",
+					Description: "Delete a staged change (API-sourced pending/rejected only)",
+				},
+			},
+		},
+		{
 			Category: "Global Flags",
 			Commands: []CommandInfo{
 				{
