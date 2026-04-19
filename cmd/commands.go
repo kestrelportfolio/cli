@@ -73,6 +73,16 @@ func commandCatalog() []CommandCategory {
 			},
 		},
 		{
+			Category: "Configuration",
+			Commands: []CommandInfo{
+				{
+					Name:        "field-configs list",
+					Usage:       "kestrel field-configs list",
+					Description: "Org field configuration (captions, required, options) per model",
+				},
+			},
+		},
+		{
 			Category: "Properties",
 			Commands: []CommandInfo{
 				{
@@ -85,6 +95,35 @@ func commandCatalog() []CommandCategory {
 					Name:        "properties show",
 					Usage:       "kestrel properties show <id>",
 					Description: "Show a single property by ID",
+				},
+				{
+					Name:        "properties leases",
+					Usage:       "kestrel properties leases <property-id> [--page N]",
+					Description: "List leases on a property",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "properties expenses",
+					Usage:       "kestrel properties expenses <property-id> [--page N]",
+					Description: "List property-level expenses",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "properties documents",
+					Usage:       "kestrel properties documents <property-id> [--page N]",
+					Description: "List documents linked to a property",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "properties key-dates",
+					Usage:       "kestrel properties key-dates <property-id> [--page N]",
+					Description: "List property-level key dates",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "properties date-entries",
+					Usage:       "kestrel properties date-entries <property-id>",
+					Description: "Full date dependency graph for a property (not paginated)",
 				},
 			},
 		},
@@ -101,6 +140,94 @@ func commandCatalog() []CommandCategory {
 					Name:        "leases show",
 					Usage:       "kestrel leases show <id>",
 					Description: "Show a single lease by ID",
+				},
+				{
+					Name:        "leases expenses",
+					Usage:       "kestrel leases expenses <lease-id> [--page N]",
+					Description: "List expenses on a lease",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "leases documents",
+					Usage:       "kestrel leases documents <lease-id> [--page N]",
+					Description: "List documents linked to a lease",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "leases key-dates",
+					Usage:       "kestrel leases key-dates <lease-id> [--page N]",
+					Description: "List lease-level key dates",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "leases component-areas",
+					Usage:       "kestrel leases component-areas <lease-id> [--page N]",
+					Description: "List component areas for a lease",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "leases securities",
+					Usage:       "kestrel leases securities <lease-id> [--page N]",
+					Description: "List lease securities (deposits, guarantees, LOCs)",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "leases clauses",
+					Usage:       "kestrel leases clauses <lease-id> [--page N]",
+					Description: "List lease clauses",
+					Flags:       []string{"--page"},
+				},
+			},
+		},
+		{
+			Category: "Expenses",
+			Commands: []CommandInfo{
+				{
+					Name:        "expenses show",
+					Usage:       "kestrel expenses show <id>",
+					Description: "Show a single expense",
+				},
+				{
+					Name:        "expenses payments",
+					Usage:       "kestrel expenses payments <expense-id> [--page N]",
+					Description: "List payments for an expense",
+					Flags:       []string{"--page"},
+				},
+				{
+					Name:        "expenses increases",
+					Usage:       "kestrel expenses increases <expense-id>",
+					Description: "List increases (escalations) for an expense",
+				},
+			},
+		},
+		{
+			Category: "Lease Securities",
+			Commands: []CommandInfo{
+				{
+					Name:        "lease-securities show",
+					Usage:       "kestrel lease-securities show <id>",
+					Description: "Show a single lease security",
+				},
+				{
+					Name:        "lease-securities increases",
+					Usage:       "kestrel lease-securities increases <security-id>",
+					Description: "List increases for a lease security",
+				},
+			},
+		},
+		{
+			Category: "Documents",
+			Commands: []CommandInfo{
+				{
+					Name:        "documents show",
+					Usage:       "kestrel documents show <id>",
+					Description: "Show document metadata",
+				},
+				{
+					Name:        "documents download",
+					Usage:       "kestrel documents download <id> [--version N] [-o FILE] [--url]",
+					Description: "Download a document's file or print its signed URL",
+					Flags:       []string{"--version", "-o", "--url"},
 				},
 			},
 		},

@@ -21,7 +21,7 @@ type Config struct {
 }
 
 // Default API base URL.
-const DefaultBaseURL = "https://app.kestrelportfolio.com/api/v1"
+const DefaultBaseURL = "https://kestrelportfolio.com/api/v1"
 
 // Load reads config from global and local files, then applies env var overrides.
 // It does NOT apply flag overrides — the caller (command layer) handles those.

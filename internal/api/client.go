@@ -93,6 +93,66 @@ func (c *Client) Get(path string, params map[string]string) (*Envelope, error) {
 	return &envelope, nil
 }
 
+// GetRedirect performs a GET that does NOT follow redirects.
+// For download endpoints that respond with a 302 to a short-lived signed URL,
+// it returns the Location header value. On any non-redirect response, it tries
+// to decode the standard error envelope and returns an APIError.
+//
+// In Ruby/Net::HTTP terms, this is like calling get with follow_redirects: false
+// and reading response['Location'] yourself.
+func (c *Client) GetRedirect(path string) (string, error) {
+	reqURL, err := url.JoinPath(c.BaseURL, path)
+	if err != nil {
+		return "", fmt.Errorf("building URL for %s: %w", path, err)
+	}
+
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("User-Agent", "kestrel-cli/"+Version)
+	req.Header.Set("Accept", "application/json")
+
+	// One-off client that short-circuits any redirect — we want the 302, not its target.
+	noRedirect := &http.Client{
+		Timeout: c.HTTPClient.Timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("making request to %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusMovedPermanently {
+		loc := resp.Header.Get("Location")
+		if loc == "" {
+			return "", fmt.Errorf("got %d but no Location header", resp.StatusCode)
+		}
+		return loc, nil
+	}
+
+	// Any other status — try to decode the standard error envelope.
+	body, _ := io.ReadAll(resp.Body)
+	var check struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.Unmarshal(body, &check); err == nil && !check.OK {
+		return "", &APIError{
+			StatusCode: resp.StatusCode,
+			Message:    check.Error,
+			Code:       check.Code,
+		}
+	}
+	return "", fmt.Errorf("unexpected status %d", resp.StatusCode)
+}
+
 // GetRaw performs a GET request and returns the raw response bytes.
 // Useful when you want to pass the entire JSON response through to --json output.
 func (c *Client) GetRaw(path string, params map[string]string) ([]byte, error) {
