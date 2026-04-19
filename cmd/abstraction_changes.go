@@ -55,42 +55,37 @@ var abstractionChangesListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-		var resp struct {
-			Data []abstractionChange `json:"data"`
-			Meta *struct {
-				Page     int  `json:"page"`
-				NextPage *int `json:"next_page"`
-				Count    int  `json:"count"`
-			} `json:"meta"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-		headers := []string{"ID", "Action", "Target", "Field", "State", "Source", "Created"}
-		rows := make([][]string, len(resp.Data))
-		for i, c := range resp.Data {
-			target := c.TargetType
-			if c.TargetID != nil {
-				target = fmt.Sprintf("%s #%d", c.TargetType, *c.TargetID)
+		if !printer.IsStructured() {
+			var resp struct {
+				Data []abstractionChange `json:"data"`
+				Meta *paginatedMeta      `json:"meta"`
 			}
-			rows[i] = []string{
-				strconv.Itoa(c.ID),
-				c.Action,
-				target,
-				deref(c.TargetField),
-				c.State,
-				c.Source,
-				c.CreatedAt,
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+			headers := []string{"ID", "Action", "Target", "Field", "State", "Source", "Created"}
+			rows := make([][]string, len(resp.Data))
+			for i, c := range resp.Data {
+				target := c.TargetType
+				if c.TargetID != nil {
+					target = fmt.Sprintf("%s #%d", c.TargetType, *c.TargetID)
+				}
+				rows[i] = []string{
+					strconv.Itoa(c.ID),
+					c.Action,
+					target,
+					deref(c.TargetField),
+					c.State,
+					c.Source,
+					c.CreatedAt,
+				}
+			}
+			printer.Table(headers, rows)
+			if resp.Meta != nil {
+				printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
 			}
 		}
-		printer.Table(headers, rows)
-		if resp.Meta != nil {
-			printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
-		}
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
@@ -107,70 +102,69 @@ var abstractionChangesShowCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
+		if !printer.IsStructured() {
+			var resp struct {
+				Data abstractionChange `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+			c := resp.Data
+			pairs := [][]string{
+				{"ID", strconv.Itoa(c.ID)},
+				{"Action", c.Action},
+				{"Target type", c.TargetType},
+				{"Target ID", derefInt(c.TargetID)},
+				{"Target field", deref(c.TargetField)},
+				{"State", c.State},
+				{"Source", c.Source},
+				{"Sub-object group", deref(c.SubObjectGroup)},
+				{"Parent change ID", derefInt(c.ParentChangeID)},
+				{"Revised from", derefInt(c.RevisedFromID)},
+				{"Owner ID", derefInt(c.OwnerID)},
+				{"Reviewed by", derefInt(c.ReviewedByID)},
+				{"Reviewed at", deref(c.ReviewedAt)},
+				{"Applied at", deref(c.AppliedAt)},
+				{"Rejection reason", deref(c.RejectionReason)},
+				{"Created", c.CreatedAt},
+			}
+			printer.Detail(pairs)
+			if len(c.Payload) > 0 {
+				fmt.Println()
+				fmt.Println("Payload")
+				fmt.Println("───────")
+				pretty, _ := json.MarshalIndent(json.RawMessage(c.Payload), "", "  ")
+				fmt.Println(string(pretty))
+			}
+			if len(c.FieldMetadata) > 0 && string(c.FieldMetadata) != "null" {
+				fmt.Println()
+				fmt.Println("Field metadata")
+				fmt.Println("──────────────")
+				pretty, _ := json.MarshalIndent(json.RawMessage(c.FieldMetadata), "", "  ")
+				fmt.Println(string(pretty))
+			}
+			if len(c.SourceLinks) > 0 && string(c.SourceLinks) != "null" {
+				fmt.Println()
+				fmt.Println("Source links")
+				fmt.Println("────────────")
+				pretty, _ := json.MarshalIndent(json.RawMessage(c.SourceLinks), "", "  ")
+				fmt.Println(string(pretty))
+			}
 		}
-		var resp struct {
-			Data abstractionChange `json:"data"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-		c := resp.Data
-		pairs := [][]string{
-			{"ID", strconv.Itoa(c.ID)},
-			{"Action", c.Action},
-			{"Target type", c.TargetType},
-			{"Target ID", derefInt(c.TargetID)},
-			{"Target field", deref(c.TargetField)},
-			{"State", c.State},
-			{"Source", c.Source},
-			{"Sub-object group", deref(c.SubObjectGroup)},
-			{"Parent change ID", derefInt(c.ParentChangeID)},
-			{"Revised from", derefInt(c.RevisedFromID)},
-			{"Owner ID", derefInt(c.OwnerID)},
-			{"Reviewed by", derefInt(c.ReviewedByID)},
-			{"Reviewed at", deref(c.ReviewedAt)},
-			{"Applied at", deref(c.AppliedAt)},
-			{"Rejection reason", deref(c.RejectionReason)},
-			{"Created", c.CreatedAt},
-		}
-		printer.Detail(pairs)
-		if len(c.Payload) > 0 {
-			fmt.Println()
-			fmt.Println("Payload")
-			fmt.Println("───────")
-			pretty, _ := json.MarshalIndent(json.RawMessage(c.Payload), "", "  ")
-			fmt.Println(string(pretty))
-		}
-		if len(c.FieldMetadata) > 0 && string(c.FieldMetadata) != "null" {
-			fmt.Println()
-			fmt.Println("Field metadata")
-			fmt.Println("──────────────")
-			pretty, _ := json.MarshalIndent(json.RawMessage(c.FieldMetadata), "", "  ")
-			fmt.Println(string(pretty))
-		}
-		if len(c.SourceLinks) > 0 && string(c.SourceLinks) != "null" {
-			fmt.Println()
-			fmt.Println("Source links")
-			fmt.Println("────────────")
-			pretty, _ := json.MarshalIndent(json.RawMessage(c.SourceLinks), "", "  ")
-			fmt.Println(string(pretty))
-		}
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
 
 var (
-	changesCreateAction          string
-	changesCreateTargetType      string
-	changesCreateTargetID        int
-	changesCreateTargetField     string
-	changesCreateSubObjectGroup  string
-	changesCreateParentChangeID  int
-	changesCreateRevisedFromID   int
-	changesCreatePayloadInput    string
+	changesCreateAction           string
+	changesCreateTargetType       string
+	changesCreateTargetID         int
+	changesCreateTargetField      string
+	changesCreateSubObjectGroup   string
+	changesCreateParentChangeID   int
+	changesCreateRevisedFromID    int
+	changesCreatePayloadInput     string
 	changesCreateSourceLinksInput string
 )
 
@@ -202,8 +196,11 @@ Examples:
 		if err := requireLogin(); err != nil {
 			return err
 		}
-		if changesCreateAction == "" || changesCreateTargetType == "" {
-			return fmt.Errorf("--action and --target-type are required")
+		if changesCreateAction == "" {
+			return &UsageError{Arg: "action", Usage: "kestrel abstractions changes create <abs-id> --action create|update|destroy --target-type <Model> --payload ..."}
+		}
+		if changesCreateTargetType == "" {
+			return &UsageError{Arg: "target-type", Usage: "kestrel abstractions changes create <abs-id> --action ... --target-type <Model> --payload ..."}
 		}
 
 		change := map[string]any{
@@ -244,7 +241,7 @@ Examples:
 			return err
 		}
 		if payloadStr == "" {
-			return fmt.Errorf("--payload is required")
+			return &UsageError{Arg: "payload", Usage: "--payload '{\"field\":\"value\"}' or --payload @file.json or --payload -"}
 		}
 		var payload any
 		if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
@@ -321,7 +318,7 @@ empty array (--source-links '[]') to clear them.`,
 			change["source_links"] = links
 		}
 		if len(change) == 0 {
-			return fmt.Errorf("at least one of --payload or --source-links is required")
+			return &UsageError{Arg: "payload or source-links", Usage: "kestrel abstractions changes update <abs-id> <change-id> --payload ... [--source-links ...]"}
 		}
 
 		env, err := client.Patch(
@@ -348,7 +345,7 @@ var abstractionChangesDeleteCmd = &cobra.Command{
 		if err := requireLogin(); err != nil {
 			return err
 		}
-		_, err := client.Delete("/abstractions/" + args[0] + "/changes/" + args[1])
+		env, err := client.Delete("/abstractions/" + args[0] + "/changes/" + args[1])
 		if err != nil {
 			var apiErr *api.APIError
 			if errors.As(err, &apiErr) && apiErr.StatusCode == 403 {
@@ -356,7 +353,8 @@ var abstractionChangesDeleteCmd = &cobra.Command{
 			}
 			return err
 		}
-		printer.Success(fmt.Sprintf("Deleted change #%s", args[1]))
+		printer.Summary(fmt.Sprintf("Deleted change #%s", args[1]))
+		printer.FinishEnvelope(env)
 		return nil
 	},
 }
@@ -364,35 +362,38 @@ var abstractionChangesDeleteCmd = &cobra.Command{
 // renderChangeResult prints a created/updated change.
 func renderChangeResult(env *api.Envelope, isCreate bool) error {
 	if env == nil || len(env.Data) == 0 {
+		printer.FinishEnvelope(env)
 		return nil
 	}
-	if printer.IsJSON() {
-		pretty, _ := json.MarshalIndent(env, "", "  ")
-		fmt.Println(string(pretty))
-		return nil
+	if !printer.IsStructured() {
+		var c abstractionChange
+		if err := json.Unmarshal(env.Data, &c); err != nil {
+			return fmt.Errorf("parsing change: %w", err)
+		}
+		target := c.TargetType
+		if c.TargetID != nil {
+			target = fmt.Sprintf("%s #%d", c.TargetType, *c.TargetID)
+		}
+		printer.Detail([][]string{
+			{"ID", strconv.Itoa(c.ID)},
+			{"Action", c.Action},
+			{"Target", target},
+			{"Field", deref(c.TargetField)},
+			{"State", c.State},
+			{"Source", c.Source},
+			{"Sub-object group", deref(c.SubObjectGroup)},
+		})
 	}
+	// Pull ID for summary (both modes want it).
 	var c abstractionChange
-	if err := json.Unmarshal(env.Data, &c); err != nil {
-		return fmt.Errorf("parsing change: %w", err)
+	if err := json.Unmarshal(env.Data, &c); err == nil {
+		if isCreate {
+			printer.Summary(fmt.Sprintf("Change #%d staged", c.ID))
+		} else {
+			printer.Summary(fmt.Sprintf("Change #%d updated", c.ID))
+		}
 	}
-	target := c.TargetType
-	if c.TargetID != nil {
-		target = fmt.Sprintf("%s #%d", c.TargetType, *c.TargetID)
-	}
-	printer.Detail([][]string{
-		{"ID", strconv.Itoa(c.ID)},
-		{"Action", c.Action},
-		{"Target", target},
-		{"Field", deref(c.TargetField)},
-		{"State", c.State},
-		{"Source", c.Source},
-		{"Sub-object group", deref(c.SubObjectGroup)},
-	})
-	if isCreate {
-		printer.Success(fmt.Sprintf("Change #%d staged", c.ID))
-	} else {
-		printer.Success(fmt.Sprintf("Change #%d updated", c.ID))
-	}
+	printer.FinishEnvelope(env)
 	return nil
 }
 

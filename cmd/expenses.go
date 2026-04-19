@@ -68,8 +68,8 @@ var expensesShowCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
+		if printer.IsStructured() {
+			printer.FinishRaw(raw)
 			return nil
 		}
 		var resp struct {
@@ -116,8 +116,8 @@ var expensesPaymentsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
+		if printer.IsStructured() {
+			printer.FinishRaw(raw)
 			return nil
 		}
 		var resp struct {
@@ -165,8 +165,8 @@ var expensesIncreasesCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
+		if printer.IsStructured() {
+			printer.FinishRaw(raw)
 			return nil
 		}
 		var resp struct {

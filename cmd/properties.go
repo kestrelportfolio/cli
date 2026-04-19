@@ -36,6 +36,14 @@ type dateEntry struct {
 	Computed      bool    `json:"computed"`
 }
 
+// paginatedMeta mirrors the API's meta block on paginated list responses.
+// Defined once here so every list command can decode it.
+type paginatedMeta struct {
+	Page     int  `json:"page"`
+	NextPage *int `json:"next_page"`
+	Count    int  `json:"count"`
+}
+
 var propertiesPage int
 
 var propertiesCmd = &cobra.Command{
@@ -47,56 +55,43 @@ var propertiesListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List properties",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if cfg.Token == "" {
-			return fmt.Errorf("not logged in. Run: kestrel login")
+		if err := requireLogin(); err != nil {
+			return err
 		}
-
 		params := map[string]string{}
 		if propertiesPage > 1 {
 			params["page"] = strconv.Itoa(propertiesPage)
 		}
-
 		raw, err := client.GetRaw("/properties", params)
 		if err != nil {
 			return err
 		}
-
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-
-		// Parse for table output
-		var resp struct {
-			Data []property          `json:"data"`
-			Meta *struct {
-				Page     int  `json:"page"`
-				NextPage *int `json:"next_page"`
-				Count    int  `json:"count"`
-			} `json:"meta"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-
-		headers := []string{"ID", "Name", "Type", "Status", "City", "Country"}
-		rows := make([][]string, len(resp.Data))
-		for i, p := range resp.Data {
-			rows[i] = []string{
-				strconv.Itoa(p.ID),
-				p.Name,
-				deref(p.PropertyType),
-				deref(p.Status),
-				deref(p.City),
-				deref(p.Country),
+		if !printer.IsStructured() {
+			var resp struct {
+				Data []property     `json:"data"`
+				Meta *paginatedMeta `json:"meta"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+			headers := []string{"ID", "Name", "Type", "Status", "City", "Country"}
+			rows := make([][]string, len(resp.Data))
+			for i, p := range resp.Data {
+				rows[i] = []string{
+					strconv.Itoa(p.ID),
+					p.Name,
+					deref(p.PropertyType),
+					deref(p.Status),
+					deref(p.City),
+					deref(p.Country),
+				}
+			}
+			printer.Table(headers, rows)
+			if resp.Meta != nil {
+				printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
 			}
 		}
-
-		printer.Table(headers, rows)
-		if resp.Meta != nil {
-			printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
-		}
-
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
@@ -106,39 +101,33 @@ var propertiesShowCmd = &cobra.Command{
 	Short: "Show a property",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if cfg.Token == "" {
-			return fmt.Errorf("not logged in. Run: kestrel login")
+		if err := requireLogin(); err != nil {
+			return err
 		}
-
 		raw, err := client.GetRaw("/properties/"+args[0], nil)
 		if err != nil {
 			return err
 		}
-
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
+		if !printer.IsStructured() {
+			var resp struct {
+				Data property `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+			p := resp.Data
+			printer.Detail([][]string{
+				{"ID", strconv.Itoa(p.ID)},
+				{"Name", p.Name},
+				{"Type", deref(p.PropertyType)},
+				{"Status", deref(p.Status)},
+				{"City", deref(p.City)},
+				{"Country", deref(p.Country)},
+				{"Measurement", p.MeasurementSystem},
+				{"Currency", p.ReportingCurrency},
+			})
 		}
-
-		var resp struct {
-			Data property `json:"data"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-
-		p := resp.Data
-		printer.Detail([][]string{
-			{"ID", strconv.Itoa(p.ID)},
-			{"Name", p.Name},
-			{"Type", deref(p.PropertyType)},
-			{"Status", deref(p.Status)},
-			{"City", deref(p.City)},
-			{"Country", deref(p.Country)},
-			{"Measurement", p.MeasurementSystem},
-			{"Currency", p.ReportingCurrency},
-		})
-
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
@@ -162,36 +151,31 @@ var propertiesLeasesCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-		var resp struct {
-			Data []lease `json:"data"`
-			Meta *struct {
-				Page     int  `json:"page"`
-				NextPage *int `json:"next_page"`
-				Count    int  `json:"count"`
-			} `json:"meta"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-		headers := []string{"ID", "Name", "Status", "Start", "End"}
-		rows := make([][]string, len(resp.Data))
-		for i, l := range resp.Data {
-			rows[i] = []string{
-				strconv.Itoa(l.ID),
-				deref(l.Name),
-				deref(l.SystemStatus),
-				l.StartDate,
-				l.EndDate,
+		if !printer.IsStructured() {
+			var resp struct {
+				Data []lease        `json:"data"`
+				Meta *paginatedMeta `json:"meta"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+			headers := []string{"ID", "Name", "Status", "Start", "End"}
+			rows := make([][]string, len(resp.Data))
+			for i, l := range resp.Data {
+				rows[i] = []string{
+					strconv.Itoa(l.ID),
+					deref(l.Name),
+					deref(l.SystemStatus),
+					l.StartDate,
+					l.EndDate,
+				}
+			}
+			printer.Table(headers, rows)
+			if resp.Meta != nil {
+				printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
 			}
 		}
-		printer.Table(headers, rows)
-		if resp.Meta != nil {
-			printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
-		}
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
@@ -213,39 +197,34 @@ var propertiesExpensesCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-		var resp struct {
-			Data []expense `json:"data"`
-			Meta *struct {
-				Page     int  `json:"page"`
-				NextPage *int `json:"next_page"`
-				Count    int  `json:"count"`
-			} `json:"meta"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-		headers := []string{"ID", "Type", "Name", "Amount", "Currency", "Frequency", "Start", "End"}
-		rows := make([][]string, len(resp.Data))
-		for i, e := range resp.Data {
-			rows[i] = []string{
-				strconv.Itoa(e.ID),
-				e.ExpenseType,
-				e.DisplayName,
-				fmt.Sprintf("%.2f", e.Amount),
-				e.AmountCurrency,
-				e.Frequency,
-				e.StartDate,
-				e.EndDate,
+		if !printer.IsStructured() {
+			var resp struct {
+				Data []expense      `json:"data"`
+				Meta *paginatedMeta `json:"meta"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+			headers := []string{"ID", "Type", "Name", "Amount", "Currency", "Frequency", "Start", "End"}
+			rows := make([][]string, len(resp.Data))
+			for i, e := range resp.Data {
+				rows[i] = []string{
+					strconv.Itoa(e.ID),
+					e.ExpenseType,
+					e.DisplayName,
+					fmt.Sprintf("%.2f", e.Amount),
+					e.AmountCurrency,
+					e.Frequency,
+					e.StartDate,
+					e.EndDate,
+				}
+			}
+			printer.Table(headers, rows)
+			if resp.Meta != nil {
+				printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
 			}
 		}
-		printer.Table(headers, rows)
-		if resp.Meta != nil {
-			printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
-		}
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
@@ -267,36 +246,31 @@ var propertiesDocumentsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-		var resp struct {
-			Data []document `json:"data"`
-			Meta *struct {
-				Page     int  `json:"page"`
-				NextPage *int `json:"next_page"`
-				Count    int  `json:"count"`
-			} `json:"meta"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-		headers := []string{"ID", "Name", "Category", "Date", "Versions"}
-		rows := make([][]string, len(resp.Data))
-		for i, d := range resp.Data {
-			rows[i] = []string{
-				strconv.Itoa(d.ID),
-				d.Name,
-				deref(d.Category1),
-				deref(d.DocumentDate),
-				strconv.Itoa(d.VersionCount),
+		if !printer.IsStructured() {
+			var resp struct {
+				Data []document     `json:"data"`
+				Meta *paginatedMeta `json:"meta"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+			headers := []string{"ID", "Name", "Category", "Date", "Versions"}
+			rows := make([][]string, len(resp.Data))
+			for i, d := range resp.Data {
+				rows[i] = []string{
+					strconv.Itoa(d.ID),
+					d.Name,
+					deref(d.Category1),
+					deref(d.DocumentDate),
+					strconv.Itoa(d.VersionCount),
+				}
+			}
+			printer.Table(headers, rows)
+			if resp.Meta != nil {
+				printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
 			}
 		}
-		printer.Table(headers, rows)
-		if resp.Meta != nil {
-			printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
-		}
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
@@ -318,37 +292,32 @@ var propertiesKeyDatesCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-		var resp struct {
-			Data []keyDate `json:"data"`
-			Meta *struct {
-				Page     int  `json:"page"`
-				NextPage *int `json:"next_page"`
-				Count    int  `json:"count"`
-			} `json:"meta"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-		headers := []string{"ID", "Name", "Date", "Category", "Status", "Notice"}
-		rows := make([][]string, len(resp.Data))
-		for i, k := range resp.Data {
-			rows[i] = []string{
-				strconv.Itoa(k.ID),
-				k.Name,
-				deref(k.Date),
-				deref(k.Category1),
-				deref(k.Status),
-				derefBool(k.NoticeDeadline),
+		if !printer.IsStructured() {
+			var resp struct {
+				Data []keyDate      `json:"data"`
+				Meta *paginatedMeta `json:"meta"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+			headers := []string{"ID", "Name", "Date", "Category", "Status", "Notice"}
+			rows := make([][]string, len(resp.Data))
+			for i, k := range resp.Data {
+				rows[i] = []string{
+					strconv.Itoa(k.ID),
+					k.Name,
+					deref(k.Date),
+					deref(k.Category1),
+					deref(k.Status),
+					derefBool(k.NoticeDeadline),
+				}
+			}
+			printer.Table(headers, rows)
+			if resp.Meta != nil {
+				printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
 			}
 		}
-		printer.Table(headers, rows)
-		if resp.Meta != nil {
-			printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
-		}
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
@@ -368,30 +337,29 @@ entries with their dependency relationships. Not paginated — the full set is r
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-		var resp struct {
-			Data []dateEntry `json:"data"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-		headers := []string{"ID", "Entry type", "Name", "Field", "Date", "Parent", "Computed"}
-		rows := make([][]string, len(resp.Data))
-		for i, d := range resp.Data {
-			rows[i] = []string{
-				strconv.Itoa(d.ID),
-				d.EntryableType,
-				d.Name,
-				deref(d.FieldName),
-				deref(d.Date),
-				fmt.Sprintf("%s #%d", d.DateableType, d.DateableID),
-				derefBool(&d.Computed),
+		if !printer.IsStructured() {
+			var resp struct {
+				Data []dateEntry `json:"data"`
 			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+			headers := []string{"ID", "Entry type", "Name", "Field", "Date", "Parent", "Computed"}
+			rows := make([][]string, len(resp.Data))
+			for i, d := range resp.Data {
+				rows[i] = []string{
+					strconv.Itoa(d.ID),
+					d.EntryableType,
+					d.Name,
+					deref(d.FieldName),
+					deref(d.Date),
+					fmt.Sprintf("%s #%d", d.DateableType, d.DateableID),
+					derefBool(&d.Computed),
+				}
+			}
+			printer.Table(headers, rows)
 		}
-		printer.Table(headers, rows)
+		printer.FinishRaw(raw)
 		return nil
 	},
 }

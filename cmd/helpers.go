@@ -41,10 +41,11 @@ func derefBool(b *bool) string {
 }
 
 // requireLogin returns an error if no token is configured.
-// Every authenticated command calls this first.
+// Every authenticated command calls this first. Returns an authMissingError
+// so the root error handler can map to ExitAuth and emit code:"unauthorized".
 func requireLogin() error {
 	if cfg.Token == "" {
-		return fmt.Errorf("not logged in. Run: kestrel login")
+		return &authMissingError{}
 	}
 	return nil
 }

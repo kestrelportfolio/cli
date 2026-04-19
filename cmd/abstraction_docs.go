@@ -94,19 +94,22 @@ Errors:
 			return err
 		}
 
-		if printer.IsJSON() {
-			pretty, _ := json.MarshalIndent(attachEnv, "", "  ")
-			fmt.Println(string(pretty))
-			return nil
+		if !printer.IsStructured() {
+			var src abstractionSourceDoc
+			if err := json.Unmarshal(attachEnv.Data, &src); err != nil {
+				return fmt.Errorf("parsing source document: %w", err)
+			}
+			printer.Detail([][]string{
+				{"Doc ID", strconv.Itoa(src.ID)},
+				{"Name", src.Name},
+				{"Category", deref(src.Category1)},
+				{"Date", deref(src.DocumentDate)},
+				{"Attached", src.CreatedAt},
+			})
 		}
-
-		var src abstractionSourceDoc
-		if err := json.Unmarshal(attachEnv.Data, &src); err != nil {
-			return fmt.Errorf("parsing source document: %w", err)
-		}
-		printer.Success(fmt.Sprintf("Uploaded %s (%d bytes) as document #%d", name, stat.Size(), doc.ID))
-		printer.Success(fmt.Sprintf("Attached to abstraction #%s", absID))
+		printer.Summary(fmt.Sprintf("Uploaded %s (%d bytes) as document #%d and attached to abstraction #%s", name, stat.Size(), doc.ID, absID))
 		printer.Breadcrumb(fmt.Sprintf("Draft a change citing this doc: kestrel abstractions changes create %s --source-links '[{\"document_id\":%d}]' ...", absID, doc.ID))
+		printer.FinishEnvelope(attachEnv)
 		return nil
 	},
 }
@@ -128,7 +131,7 @@ the API refuses with 422 cited_by_locked_change.`,
 			return err
 		}
 		if removeDocID == 0 {
-			return fmt.Errorf("--document-id is required")
+			return &UsageError{Arg: "document-id", Usage: "kestrel abstractions remove-doc <abstraction-id> --document-id N"}
 		}
 
 		env, err := client.Delete("/documents/" + strconv.Itoa(removeDocID))
@@ -140,27 +143,20 @@ the API refuses with 422 cited_by_locked_change.`,
 			return err
 		}
 
-		if printer.IsJSON() {
-			pretty, _ := json.MarshalIndent(env, "", "  ")
-			fmt.Println(string(pretty))
-			return nil
-		}
-
-		printer.Success(fmt.Sprintf("Removed document #%d", removeDocID))
-		if env != nil && len(env.Data) > 0 {
+		if !printer.IsStructured() && env != nil && len(env.Data) > 0 {
 			var cascade struct {
 				DestroyedDraftedChanges  int `json:"destroyed_drafted_changes"`
 				DetachedFromAbstractions int `json:"detached_from_abstractions"`
 			}
 			if err := json.Unmarshal(env.Data, &cascade); err == nil {
-				if cascade.DestroyedDraftedChanges > 0 {
-					fmt.Fprintf(os.Stderr, "  Destroyed %d drafted change(s) that cited it\n", cascade.DestroyedDraftedChanges)
-				}
-				if cascade.DetachedFromAbstractions > 0 {
-					fmt.Fprintf(os.Stderr, "  Detached from %d abstraction(s)\n", cascade.DetachedFromAbstractions)
-				}
+				printer.Detail([][]string{
+					{"Destroyed drafted changes", strconv.Itoa(cascade.DestroyedDraftedChanges)},
+					{"Detached from abstractions", strconv.Itoa(cascade.DetachedFromAbstractions)},
+				})
 			}
 		}
+		printer.Summary(fmt.Sprintf("Removed document #%d", removeDocID))
+		printer.FinishEnvelope(env)
 		return nil
 	},
 }
@@ -182,36 +178,31 @@ var abstractionsSourcesCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-		var resp struct {
-			Data []abstractionSourceDoc `json:"data"`
-			Meta *struct {
-				Page     int  `json:"page"`
-				NextPage *int `json:"next_page"`
-				Count    int  `json:"count"`
-			} `json:"meta"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-		headers := []string{"Doc ID", "Name", "Category", "Date", "Attached"}
-		rows := make([][]string, len(resp.Data))
-		for i, s := range resp.Data {
-			rows[i] = []string{
-				strconv.Itoa(s.ID),
-				s.Name,
-				deref(s.Category1),
-				deref(s.DocumentDate),
-				s.CreatedAt,
+		if !printer.IsStructured() {
+			var resp struct {
+				Data []abstractionSourceDoc `json:"data"`
+				Meta *paginatedMeta         `json:"meta"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+			headers := []string{"Doc ID", "Name", "Category", "Date", "Attached"}
+			rows := make([][]string, len(resp.Data))
+			for i, s := range resp.Data {
+				rows[i] = []string{
+					strconv.Itoa(s.ID),
+					s.Name,
+					deref(s.Category1),
+					deref(s.DocumentDate),
+					s.CreatedAt,
+				}
+			}
+			printer.Table(headers, rows)
+			if resp.Meta != nil {
+				printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
 			}
 		}
-		printer.Table(headers, rows)
-		if resp.Meta != nil {
-			printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
-		}
+		printer.FinishRaw(raw)
 		return nil
 	},
 }

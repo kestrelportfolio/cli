@@ -38,51 +38,48 @@ var fieldConfigsListCmd = &cobra.Command{
 			return err
 		}
 
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-
-		var resp struct {
-			Data map[string][]fieldConfigEntry `json:"data"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-
-		// Sort model keys for stable, scannable output.
-		keys := make([]string, 0, len(resp.Data))
-		for k := range resp.Data {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-
-		for i, k := range keys {
-			if i > 0 {
-				fmt.Println()
+		if !printer.IsStructured() {
+			var resp struct {
+				Data map[string][]fieldConfigEntry `json:"data"`
 			}
-			fmt.Println(k)
-			fmt.Println(strings.Repeat("─", len(k)))
-			headers := []string{"Field", "Type", "Caption", "Required", "Options"}
-			rows := make([][]string, len(resp.Data[k]))
-			for j, e := range resp.Data[k] {
-				req := "no"
-				if e.AlwaysRequired {
-					req = "always"
-				} else if e.Required {
-					req = "yes"
-				}
-				rows[j] = []string{
-					e.FieldName,
-					e.Type,
-					deref(e.Caption),
-					req,
-					strings.Join(e.Options, ", "),
-				}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
 			}
-			printer.Table(headers, rows)
+
+			keys := make([]string, 0, len(resp.Data))
+			for k := range resp.Data {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+
+			for i, k := range keys {
+				if i > 0 {
+					fmt.Println()
+				}
+				fmt.Println(k)
+				fmt.Println(strings.Repeat("─", len(k)))
+				headers := []string{"Field", "Type", "Caption", "Required", "Options"}
+				rows := make([][]string, len(resp.Data[k]))
+				for j, e := range resp.Data[k] {
+					req := "no"
+					if e.AlwaysRequired {
+						req = "always"
+					} else if e.Required {
+						req = "yes"
+					}
+					rows[j] = []string{
+						e.FieldName,
+						e.Type,
+						deref(e.Caption),
+						req,
+						strings.Join(e.Options, ", "),
+					}
+				}
+				printer.Table(headers, rows)
+			}
 		}
 
+		printer.FinishRaw(raw)
 		return nil
 	},
 }

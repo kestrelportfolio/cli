@@ -55,8 +55,8 @@ var documentsShowCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
+		if printer.IsStructured() {
+			printer.FinishRaw(raw)
 			return nil
 		}
 		var resp struct {

@@ -79,41 +79,36 @@ var templatesListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-		var resp struct {
-			Data []abstractionTemplate `json:"data"`
-			Meta *struct {
-				Page     int  `json:"page"`
-				NextPage *int `json:"next_page"`
-				Count    int  `json:"count"`
-			} `json:"meta"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-		headers := []string{"ID", "Name", "Kind", "Default", "Description"}
-		rows := make([][]string, len(resp.Data))
-		for i, t := range resp.Data {
-			def := ""
-			if t.IsDefault {
-				def = "yes"
+		if !printer.IsStructured() {
+			var resp struct {
+				Data []abstractionTemplate `json:"data"`
+				Meta *paginatedMeta        `json:"meta"`
 			}
-			rows[i] = []string{
-				strconv.Itoa(t.ID),
-				t.Name,
-				deref(t.Kind),
-				def,
-				deref(t.Description),
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
 			}
-		}
-		printer.Table(headers, rows)
-		if resp.Meta != nil {
-			printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
+			headers := []string{"ID", "Name", "Kind", "Default", "Description"}
+			rows := make([][]string, len(resp.Data))
+			for i, t := range resp.Data {
+				def := ""
+				if t.IsDefault {
+					def = "yes"
+				}
+				rows[i] = []string{
+					strconv.Itoa(t.ID),
+					t.Name,
+					deref(t.Kind),
+					def,
+					deref(t.Description),
+				}
+			}
+			printer.Table(headers, rows)
+			if resp.Meta != nil {
+				printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
+			}
 		}
 		printer.Breadcrumb("Preview schema: kestrel templates schema <id>")
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
@@ -130,45 +125,44 @@ var templatesShowCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-		var resp struct {
-			Data abstractionTemplate `json:"data"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-		t := resp.Data
-		printer.Detail([][]string{
-			{"ID", strconv.Itoa(t.ID)},
-			{"Name", t.Name},
-			{"Kind", deref(t.Kind)},
-			{"Default", derefBool(&t.IsDefault)},
-			{"Description", deref(t.Description)},
-		})
-		if len(t.Requirements) > 0 {
-			fmt.Println()
-			fmt.Println("Requirements")
-			fmt.Println(strings.Repeat("─", 12))
-			headers := []string{"Pos", "Kind", "Model", "Field", "Min", "Section", "Approval"}
-			rows := make([][]string, len(t.Requirements))
-			for i, r := range t.Requirements {
-				rows[i] = []string{
-					strconv.Itoa(r.Position),
-					r.Kind,
-					r.TargetModel,
-					deref(r.TargetField),
-					derefInt(r.MinCount),
-					deref(r.Section),
-					derefBool(&r.RequiredForApproval),
-				}
+		if !printer.IsStructured() {
+			var resp struct {
+				Data abstractionTemplate `json:"data"`
 			}
-			printer.Table(headers, rows)
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+			t := resp.Data
+			printer.Detail([][]string{
+				{"ID", strconv.Itoa(t.ID)},
+				{"Name", t.Name},
+				{"Kind", deref(t.Kind)},
+				{"Default", derefBool(&t.IsDefault)},
+				{"Description", deref(t.Description)},
+			})
+			if len(t.Requirements) > 0 {
+				fmt.Println()
+				fmt.Println("Requirements")
+				fmt.Println(strings.Repeat("─", 12))
+				headers := []string{"Pos", "Kind", "Model", "Field", "Min", "Section", "Approval"}
+				rows := make([][]string, len(t.Requirements))
+				for i, r := range t.Requirements {
+					rows[i] = []string{
+						strconv.Itoa(r.Position),
+						r.Kind,
+						r.TargetModel,
+						deref(r.TargetField),
+						derefInt(r.MinCount),
+						deref(r.Section),
+						derefBool(&r.RequiredForApproval),
+					}
+				}
+				printer.Table(headers, rows)
+			}
 		}
 		printer.Breadcrumb(fmt.Sprintf("Preview authoring schema: kestrel templates schema %s", args[0]))
 		printer.Breadcrumb(fmt.Sprintf("Start an abstraction: kestrel abstractions create --template-id %s --kind greenfield", args[0]))
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
@@ -185,11 +179,13 @@ var templatesSchemaCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
+		if !printer.IsStructured() {
+			if err := renderAbstractionSchema(raw); err != nil {
+				return err
+			}
 		}
-		return renderAbstractionSchema(raw)
+		printer.FinishRaw(raw)
+		return nil
 	},
 }
 

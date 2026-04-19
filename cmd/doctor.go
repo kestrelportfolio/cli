@@ -96,7 +96,7 @@ var doctorCmd = &cobra.Command{
 		}
 
 		// Output
-		if printer.IsJSON() {
+		if printer.IsStructured() {
 			result := DoctorResult{Checks: checks}
 			data, _ := json.MarshalIndent(result, "", "  ")
 			fmt.Println(string(data))

@@ -58,8 +58,8 @@ var loginCmd = &cobra.Command{
 		}
 
 		// Show who we authenticated as
-		if printer.IsJSON() {
-			printer.JSON(envelope.Data)
+		if printer.IsStructured() {
+			printer.FinishEnvelope(envelope)
 			return nil
 		}
 

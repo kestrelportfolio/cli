@@ -347,17 +347,27 @@ func commandCatalog() []CommandCategory {
 				{
 					Name:        "--json",
 					Usage:       "kestrel <command> --json",
-					Description: "Output raw JSON (default when piped)",
+					Description: "Full JSON envelope on stdout (includes breadcrumbs, meta)",
+				},
+				{
+					Name:        "--agent",
+					Usage:       "kestrel <command> --agent",
+					Description: "Agent/script mode — data-only JSON on success, {ok:false,...} on error",
 				},
 				{
 					Name:        "--quiet",
 					Usage:       "kestrel <command> --quiet",
-					Description: "Minimal output for scripting",
+					Description: "Minimal output — suppress success lines and breadcrumbs",
 				},
 				{
 					Name:        "--base-url",
 					Usage:       "kestrel <command> --base-url URL",
 					Description: "Override the API base URL",
+				},
+				{
+					Name:        "--help --agent",
+					Usage:       "kestrel <command> --help --agent",
+					Description: "Structured command metadata JSON — walkable tree for agent discovery",
 				},
 			},
 		},
@@ -371,7 +381,7 @@ var commandsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		catalog := commandCatalog()
 
-		if printer.IsJSON() {
+		if printer.IsStructured() {
 			data, err := json.MarshalIndent(catalog, "", "  ")
 			if err != nil {
 				return fmt.Errorf("encoding commands: %w", err)

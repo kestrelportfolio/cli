@@ -15,12 +15,15 @@ import (
 // This is similar to Ruby's JSON.parse returning a generic Hash that you
 // then map into a model.
 type Envelope struct {
-	OK     bool            `json:"ok"`
-	Data   json.RawMessage `json:"data,omitempty"`
-	Meta   *PaginationMeta `json:"meta,omitempty"`
-	Error  string          `json:"error,omitempty"`
-	Code   string          `json:"code,omitempty"`
-	Errors []string        `json:"errors,omitempty"`
+	OK          bool            `json:"ok"`
+	Data        json.RawMessage `json:"data,omitempty"`
+	Meta        *PaginationMeta `json:"meta,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	Code        string          `json:"code,omitempty"`
+	Errors      []string        `json:"errors,omitempty"`
+	Hint        string          `json:"hint,omitempty"`        // CLI-added: prescriptive hint for usage errors
+	Summary     string          `json:"summary,omitempty"`     // CLI-added: one-line human-readable result
+	Breadcrumbs []string        `json:"breadcrumbs,omitempty"` // CLI-added: suggested next commands
 }
 
 // PaginationMeta matches the API's pagination metadata.

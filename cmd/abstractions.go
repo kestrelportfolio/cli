@@ -59,38 +59,33 @@ var abstractionsListCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-		var resp struct {
-			Data []abstraction `json:"data"`
-			Meta *struct {
-				Page     int  `json:"page"`
-				NextPage *int `json:"next_page"`
-				Count    int  `json:"count"`
-			} `json:"meta"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return fmt.Errorf("parsing response: %w", err)
-		}
-		headers := []string{"ID", "Name", "Template", "Kind", "State", "Property", "Lease"}
-		rows := make([][]string, len(resp.Data))
-		for i, a := range resp.Data {
-			rows[i] = []string{
-				strconv.Itoa(a.ID),
-				a.Name,
-				deref(a.TemplateName),
-				a.Kind,
-				a.State,
-				derefInt(a.TargetPropertyID),
-				derefInt(a.TargetLeaseID),
+		if !printer.IsStructured() {
+			var resp struct {
+				Data []abstraction  `json:"data"`
+				Meta *paginatedMeta `json:"meta"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("parsing response: %w", err)
+			}
+			headers := []string{"ID", "Name", "Template", "Kind", "State", "Property", "Lease"}
+			rows := make([][]string, len(resp.Data))
+			for i, a := range resp.Data {
+				rows[i] = []string{
+					strconv.Itoa(a.ID),
+					a.Name,
+					deref(a.TemplateName),
+					a.Kind,
+					a.State,
+					derefInt(a.TargetPropertyID),
+					derefInt(a.TargetLeaseID),
+				}
+			}
+			printer.Table(headers, rows)
+			if resp.Meta != nil {
+				printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
 			}
 		}
-		printer.Table(headers, rows)
-		if resp.Meta != nil {
-			printer.PaginationHint(resp.Meta.NextPage, resp.Meta.Count)
-		}
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
@@ -107,10 +102,9 @@ var abstractionsShowCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
+
+		// Parse once — we need it both for TTY render and for deciding
+		// which breadcrumbs to emit based on state.
 		var resp struct {
 			Data abstraction `json:"data"`
 		}
@@ -118,27 +112,31 @@ var abstractionsShowCmd = &cobra.Command{
 			return fmt.Errorf("parsing response: %w", err)
 		}
 		a := resp.Data
-		printer.Detail([][]string{
-			{"ID", strconv.Itoa(a.ID)},
-			{"Name", a.Name},
-			{"Kind", a.Kind},
-			{"State", a.State},
-			{"Template ID", derefInt(a.TemplateID)},
-			{"Template", deref(a.TemplateName)},
-			{"Target property", derefInt(a.TargetPropertyID)},
-			{"Target lease", derefInt(a.TargetLeaseID)},
-			{"Submitted at", deref(a.SubmittedAt)},
-			{"Completed at", deref(a.CompletedAt)},
-			{"Changes", derefInt(a.ChangesCount)},
-			{"Sources", derefInt(a.SourceDocumentsCount)},
-			{"Created", a.CreatedAt},
-			{"Updated", a.UpdatedAt},
-		})
+
+		if !printer.IsStructured() {
+			printer.Detail([][]string{
+				{"ID", strconv.Itoa(a.ID)},
+				{"Name", a.Name},
+				{"Kind", a.Kind},
+				{"State", a.State},
+				{"Template ID", derefInt(a.TemplateID)},
+				{"Template", deref(a.TemplateName)},
+				{"Target property", derefInt(a.TargetPropertyID)},
+				{"Target lease", derefInt(a.TargetLeaseID)},
+				{"Submitted at", deref(a.SubmittedAt)},
+				{"Completed at", deref(a.CompletedAt)},
+				{"Changes", derefInt(a.ChangesCount)},
+				{"Sources", derefInt(a.SourceDocumentsCount)},
+				{"Created", a.CreatedAt},
+				{"Updated", a.UpdatedAt},
+			})
+		}
 		if a.State == "in_progress" {
 			printer.Breadcrumb(fmt.Sprintf("Schema: kestrel abstractions schema %d", a.ID))
 			printer.Breadcrumb(fmt.Sprintf("Changes: kestrel abstractions changes list %d", a.ID))
 			printer.Breadcrumb(fmt.Sprintf("Sources: kestrel abstractions sources %d", a.ID))
 		}
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
@@ -163,14 +161,14 @@ var abstractionsCreateCmd = &cobra.Command{
 			return err
 		}
 		if abstractionsCreateTemplateID == 0 {
-			return fmt.Errorf("--template-id is required")
+			return &UsageError{Arg: "template-id", Usage: "kestrel abstractions create --template-id N --kind greenfield|brownfield"}
 		}
 		if abstractionsCreateKind != "greenfield" && abstractionsCreateKind != "brownfield" {
-			return fmt.Errorf("--kind must be 'greenfield' or 'brownfield'")
+			return &UsageError{Arg: "kind", Usage: "kestrel abstractions create --template-id N --kind greenfield|brownfield"}
 		}
 		if abstractionsCreateKind == "brownfield" {
 			if abstractionsCreateTargetPropertyID == 0 || abstractionsCreateTargetLeaseID == 0 {
-				return fmt.Errorf("brownfield abstractions require --target-property-id AND --target-lease-id")
+				return &UsageError{Arg: "target-property-id AND target-lease-id", Usage: "kestrel abstractions create --kind brownfield --target-property-id N --target-lease-id N"}
 			}
 		}
 
@@ -206,7 +204,7 @@ var abstractionsUpdateCmd = &cobra.Command{
 			return err
 		}
 		if abstractionsUpdateName == "" {
-			return fmt.Errorf("--name is required")
+			return &UsageError{Arg: "name", Usage: "kestrel abstractions update <id> --name \"...\""}
 		}
 		body := map[string]any{"abstraction": map[string]any{"name": abstractionsUpdateName}}
 		env, err := client.Patch("/abstractions/"+args[0], body)
@@ -246,14 +244,13 @@ var abstractionsSchemaCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if printer.IsJSON() {
-			printer.JSON(raw)
-			return nil
-		}
-		if err := renderAbstractionSchema(raw); err != nil {
-			return err
+		if !printer.IsStructured() {
+			if err := renderAbstractionSchema(raw); err != nil {
+				return err
+			}
 		}
 		printer.Breadcrumb(fmt.Sprintf("Draft a change: kestrel abstractions changes create %s --action update --target-type <Model> --payload '{\"field\":\"value\"}'", args[0]))
+		printer.FinishRaw(raw)
 		return nil
 	},
 }
@@ -262,33 +259,46 @@ var abstractionsSchemaCmd = &cobra.Command{
 // If newlyCreated is true, it emits follow-up breadcrumbs (schema / sources).
 func renderAbstractionResult(env *api.Envelope, newlyCreated bool) error {
 	if env == nil || len(env.Data) == 0 {
+		printer.FinishEnvelope(env)
 		return nil
 	}
-	if printer.IsJSON() {
-		pretty, err := json.MarshalIndent(env, "", "  ")
-		if err == nil {
-			fmt.Println(string(pretty))
+	if !printer.IsStructured() {
+		var a abstraction
+		if err := json.Unmarshal(env.Data, &a); err != nil {
+			return fmt.Errorf("parsing abstraction: %w", err)
 		}
-		return nil
+		printer.Detail([][]string{
+			{"ID", strconv.Itoa(a.ID)},
+			{"Name", a.Name},
+			{"Kind", a.Kind},
+			{"State", a.State},
+			{"Template", deref(a.TemplateName)},
+			{"Target property", derefInt(a.TargetPropertyID)},
+			{"Target lease", derefInt(a.TargetLeaseID)},
+		})
+		if newlyCreated {
+			var summaryA abstraction
+			_ = json.Unmarshal(env.Data, &summaryA)
+			printer.Summary(fmt.Sprintf("Abstraction #%d created", summaryA.ID))
+		}
+	} else {
+		// Structured mode: pull ID for summary line in envelope.
+		if newlyCreated {
+			var summaryA abstraction
+			if err := json.Unmarshal(env.Data, &summaryA); err == nil {
+				printer.Summary(fmt.Sprintf("Abstraction #%d created", summaryA.ID))
+			}
+		}
 	}
-	var a abstraction
-	if err := json.Unmarshal(env.Data, &a); err != nil {
-		return fmt.Errorf("parsing abstraction: %w", err)
-	}
-	printer.Detail([][]string{
-		{"ID", strconv.Itoa(a.ID)},
-		{"Name", a.Name},
-		{"Kind", a.Kind},
-		{"State", a.State},
-		{"Template", deref(a.TemplateName)},
-		{"Target property", derefInt(a.TargetPropertyID)},
-		{"Target lease", derefInt(a.TargetLeaseID)},
-	})
 	if newlyCreated {
-		printer.Success(fmt.Sprintf("Abstraction #%d created", a.ID))
-		printer.Breadcrumb(fmt.Sprintf("Discover fields: kestrel abstractions schema %d", a.ID))
-		printer.Breadcrumb(fmt.Sprintf("Add source doc: kestrel abstractions add-doc %d <file>", a.ID))
+		// Extract ID for breadcrumbs.
+		var a abstraction
+		if err := json.Unmarshal(env.Data, &a); err == nil {
+			printer.Breadcrumb(fmt.Sprintf("Discover fields: kestrel abstractions schema %d", a.ID))
+			printer.Breadcrumb(fmt.Sprintf("Add source doc: kestrel abstractions add-doc %d <file>", a.ID))
+		}
 	}
+	printer.FinishEnvelope(env)
 	return nil
 }
 

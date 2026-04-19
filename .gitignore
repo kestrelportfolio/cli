@@ -1,5 +1,5 @@
-# Binary
-kestrel
+# Binary (anchored to repo root so it doesn't match skills/kestrel/)
+/kestrel
 
 # OS files
 .DS_Store

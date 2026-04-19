@@ -49,7 +49,7 @@ func makeSetupHandler(agent harness.AgentInfo) func(*cobra.Command, []string) er
 func runClaudeSetup() error {
 	steps, err := harness.RunClaudeSetup()
 
-	if printer.IsJSON() {
+	if printer.IsStructured() {
 		result := &harness.ClaudeSetupResult{
 			Agent: "claude",
 			Steps: steps,
