@@ -1,0 +1,12 @@
+{
+  "name": "kestrel",
+  "version": "0.3.0",
+  "description": "Kestrel Portfolio integration for Claude Code. Browse properties, leases, and portfolio data; author lease abstractions with block-anchored citations.",
+  "author": {
+    "name": "Kestrel Portfolio",
+    "email": "support@kestrelportfolio.com"
+  },
+  "homepage": "https://kestrelportfolio.com",
+  "repository": "https://github.com/kestrelportfolio/cli",
+  "license": "MIT"
+}
