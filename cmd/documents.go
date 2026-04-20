@@ -25,17 +25,18 @@ type documentParent struct {
 }
 
 type document struct {
-	ID            int              `json:"id"`
-	Name          string           `json:"name"`
-	Category1     *string          `json:"category_1"`
-	Category2     *string          `json:"category_2"`
-	DocumentDate  *string          `json:"document_date"`
-	VersionCount  int              `json:"version_count"`
-	Parents       []documentParent `json:"parents"`
-	LatestVersion *documentVersion `json:"latest_version"`
-	DownloadURL   *string          `json:"download_url"`
-	CreatedAt     string           `json:"created_at"`
-	UpdatedAt     string           `json:"updated_at"`
+	ID                   int              `json:"id"`
+	Name                 string           `json:"name"`
+	Category1            *string          `json:"category_1"`
+	Category2            *string          `json:"category_2"`
+	DocumentDate         *string          `json:"document_date"`
+	VersionCount         int              `json:"version_count"`
+	CurrentVersionNumber *int             `json:"current_version_number"`
+	Parents              []documentParent `json:"parents"`
+	LatestVersion        *documentVersion `json:"latest_version"`
+	DownloadURL          *string          `json:"download_url"`
+	CreatedAt            string           `json:"created_at"`
+	UpdatedAt            string           `json:"updated_at"`
 }
 
 var documentsCmd = &cobra.Command{
@@ -73,6 +74,7 @@ var documentsShowCmd = &cobra.Command{
 			{"Category 2", deref(d.Category2)},
 			{"Document date", deref(d.DocumentDate)},
 			{"Version count", strconv.Itoa(d.VersionCount)},
+			{"Current version", derefInt(d.CurrentVersionNumber)},
 		}
 		if d.LatestVersion != nil {
 			v := d.LatestVersion

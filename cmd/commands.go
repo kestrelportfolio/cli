@@ -232,6 +232,34 @@ func commandCatalog() []CommandCategory {
 			},
 		},
 		{
+			Category: "Document Parsing",
+			Commands: []CommandInfo{
+				{
+					Name:        "documents parse",
+					Usage:       "kestrel documents parse <doc-id> [--wait] [--timeout SECS]",
+					Description: "Parse status for the doc's latest version; --wait polls until terminal",
+					Flags:       []string{"--wait", "--timeout"},
+				},
+				{
+					Name:        "documents pages",
+					Usage:       "kestrel documents pages <doc-id> [--version N]",
+					Description: "List pages (width/height/rotation) for a parsed version",
+					Flags:       []string{"--version"},
+				},
+				{
+					Name:        "documents blocks",
+					Usage:       "kestrel documents blocks <doc-id> [--version N] [--page N] [--type T] [--search Q] [--since-order N] [--near ID --window K] [--limit N]",
+					Description: "Walk the reading-ordered block graph. Trigram text search, filters, cursor, neighborhood",
+					Flags:       []string{"--version", "--page", "--type", "--search", "--since-order", "--near", "--window", "--limit"},
+				},
+				{
+					Name:        "documents block",
+					Usage:       "kestrel documents block <block-id>",
+					Description: "Fetch a single block — confirm text + bbox before citing",
+				},
+			},
+		},
+		{
 			Category: "Abstraction Templates",
 			Commands: []CommandInfo{
 				{
@@ -290,9 +318,9 @@ func commandCatalog() []CommandCategory {
 				},
 				{
 					Name:        "abstractions add-doc",
-					Usage:       "kestrel abstractions add-doc <abstraction-id> <file> [--name ...]",
-					Description: "Upload a file and attach it as a source document",
-					Flags:       []string{"--name"},
+					Usage:       "kestrel abstractions add-doc <abstraction-id> <file> [--name ...] [--wait-parse] [--timeout SECS]",
+					Description: "Upload a file and attach it as a source document; --wait-parse blocks until the structured parse is ready",
+					Flags:       []string{"--name", "--wait-parse", "--timeout"},
 				},
 				{
 					Name:        "abstractions remove-doc",
@@ -313,9 +341,9 @@ func commandCatalog() []CommandCategory {
 			Commands: []CommandInfo{
 				{
 					Name:        "abstractions changes list",
-					Usage:       "kestrel abstractions changes list <abstraction-id> [--page N]",
-					Description: "List staged changes on an abstraction",
-					Flags:       []string{"--page"},
+					Usage:       "kestrel abstractions changes list <abstraction-id> [--page N] [--state S]...",
+					Description: "List staged changes. Filter via --state (repeatable). Rows include a source_links_preview",
+					Flags:       []string{"--page", "--state"},
 				},
 				{
 					Name:        "abstractions changes show",
@@ -324,9 +352,15 @@ func commandCatalog() []CommandCategory {
 				},
 				{
 					Name:        "abstractions changes create",
-					Usage:       "kestrel abstractions changes create <abstraction-id> --action ... --target-type ... --payload ...",
-					Description: "Create or upsert a staged change",
-					Flags:       []string{"--action", "--target-type", "--target-id", "--target-field", "--sub-object-group", "--parent-change-id", "--revised-from-id", "--payload", "--source-links"},
+					Usage:       "kestrel abstractions changes create <abstraction-id> --action ... --target-type ... --payload ... [--cite-block BLOCK[:chars=S-E|:cell=R,C]]",
+					Description: "Create or upsert a staged change. --cite-block is the shortcut for block-ref citations",
+					Flags:       []string{"--action", "--target-type", "--target-id", "--target-field", "--sub-object-group", "--parent-change-id", "--revised-from-id", "--payload", "--source-links", "--cite-block"},
+				},
+				{
+					Name:        "abstractions changes create-batch",
+					Usage:       "kestrel abstractions changes create-batch <abstraction-id> --file @batch.json",
+					Description: "Create up to 500 changes atomically. Per-item errors roll back the whole batch",
+					Flags:       []string{"--file"},
 				},
 				{
 					Name:        "abstractions changes update",

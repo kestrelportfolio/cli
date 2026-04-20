@@ -24,7 +24,9 @@ type abstractionSourceDoc struct {
 }
 
 var (
-	addDocName string
+	addDocName             string
+	addDocWaitParse        bool
+	addDocWaitTimeoutSecs  int
 )
 
 var abstractionsAddDocCmd = &cobra.Command{
@@ -34,6 +36,11 @@ var abstractionsAddDocCmd = &cobra.Command{
 source in one step. The filename (from the path, or --name) is stored as the
 document's display name. PDF mime type is detected from the .pdf extension;
 other files upload as application/octet-stream.
+
+Attaching a document triggers a structured parse (Docling) in the background.
+Pass --wait-parse to block until the parse reaches complete or failed before
+returning — the common agent flow, since you can't cite blocks until the
+parse is done.
 
 Errors:
   * 403 forbidden   — token lacks lease_abstractions#create
@@ -107,8 +114,22 @@ Errors:
 				{"Attached", src.CreatedAt},
 			})
 		}
-		printer.Summary(fmt.Sprintf("Uploaded %s (%d bytes) as document #%d and attached to abstraction #%s", name, stat.Size(), doc.ID, absID))
-		printer.Breadcrumb(fmt.Sprintf("Draft a change citing this doc: kestrel abstractions changes create %s --source-links '[{\"document_id\":%d}]' ...", absID, doc.ID))
+		summaryLine := fmt.Sprintf("Uploaded %s (%d bytes) as document #%d and attached to abstraction #%s", name, stat.Size(), doc.ID, absID)
+		printer.Summary(summaryLine)
+
+		if addDocWaitParse {
+			// Surface the attach confirmation to the user before the progress
+			// line starts ticking. In structured modes the parse envelope is
+			// what we emit at the end, so the attach details are dropped —
+			// that's fine; agents care about parse readiness, not the
+			// document_id they already know.
+			printer.Success(summaryLine)
+			return runParseWait(strconv.Itoa(doc.ID), addDocWaitTimeoutSecs)
+		}
+
+		printer.Breadcrumb(fmt.Sprintf("Wait for parse: kestrel documents parse %d --wait", doc.ID))
+		printer.Breadcrumb(fmt.Sprintf("List blocks once parsed: kestrel documents blocks %d", doc.ID))
+		printer.Breadcrumb(fmt.Sprintf("Cite a block in a change: kestrel abstractions changes create %s --cite-block <block-id> --action ...", absID))
 		printer.FinishEnvelope(attachEnv)
 		return nil
 	},
@@ -209,6 +230,8 @@ var abstractionsSourcesCmd = &cobra.Command{
 
 func init() {
 	abstractionsAddDocCmd.Flags().StringVar(&addDocName, "name", "", "Override the filename stored on the document")
+	abstractionsAddDocCmd.Flags().BoolVar(&addDocWaitParse, "wait-parse", false, "Block until the structured parse reaches complete or failed")
+	abstractionsAddDocCmd.Flags().IntVar(&addDocWaitTimeoutSecs, "timeout", 300, "Seconds to wait for parse completion when --wait-parse is set")
 
 	abstractionsRemoveDocCmd.Flags().IntVar(&removeDocID, "document-id", 0, "ID of the document to destroy (required)")
 

@@ -100,6 +100,46 @@ func (c *Client) Post(path string, body any) (*Envelope, error) {
 	return c.doJSON("POST", path, body)
 }
 
+// PostRaw sends a JSON-body POST and returns (statusCode, body, err). The body
+// is returned verbatim so callers can decode response shapes that don't fit
+// the standard Envelope — e.g. per-item validation errors from batch endpoints.
+// Transport-level errors still come back via err; HTTP errors are reported via
+// the status code and body for the caller to interpret.
+func (c *Client) PostRaw(path string, body any) (int, []byte, error) {
+	reqURL, err := url.JoinPath(c.BaseURL, path)
+	if err != nil {
+		return 0, nil, fmt.Errorf("building URL for %s: %w", path, err)
+	}
+	var reader io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, fmt.Errorf("encoding request body: %w", err)
+		}
+		reader = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequest("POST", reqURL, reader)
+	if err != nil {
+		return 0, nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("User-Agent", "kestrel-cli/"+Version)
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("making request to %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("reading response body: %w", err)
+	}
+	return resp.StatusCode, raw, nil
+}
+
 // Patch sends a PATCH with a JSON-encoded body.
 func (c *Client) Patch(path string, body any) (*Envelope, error) {
 	return c.doJSON("PATCH", path, body)
@@ -267,22 +307,30 @@ func (c *Client) GetRedirect(path string) (string, error) {
 
 // GetRaw performs a GET request and returns the raw response bytes.
 // Useful when you want to pass the entire JSON response through to --json output.
+// For endpoints that take repeated keys (e.g. `?state[]=foo&state[]=bar`),
+// use GetRawValues instead — this helper's map signature can't express that.
 func (c *Client) GetRaw(path string, params map[string]string) ([]byte, error) {
+	values := url.Values{}
+	for k, v := range params {
+		values.Set(k, v)
+	}
+	return c.GetRawValues(path, values)
+}
+
+// GetRawValues is the multi-value variant of GetRaw. Pass a url.Values so you
+// can emit repeated keys for array-shaped params like `state[]=`.
+func (c *Client) GetRawValues(path string, values url.Values) ([]byte, error) {
 	reqURL, err := url.JoinPath(c.BaseURL, path)
 	if err != nil {
 		return nil, fmt.Errorf("building URL for %s: %w", path, err)
 	}
 
-	if len(params) > 0 {
+	if len(values) > 0 {
 		u, err := url.Parse(reqURL)
 		if err != nil {
 			return nil, fmt.Errorf("parsing URL: %w", err)
 		}
-		q := u.Query()
-		for k, v := range params {
-			q.Set(k, v)
-		}
-		u.RawQuery = q.Encode()
+		u.RawQuery = values.Encode()
 		reqURL = u.String()
 	}
 
