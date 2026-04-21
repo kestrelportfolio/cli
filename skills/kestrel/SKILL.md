@@ -76,30 +76,72 @@ web UI before it goes live.
 9. **Channel-lock: API-authored changes can only be edited via the API.**
    Changes drafted in the web UI (source: "web_ui") are read-only from the
    CLI. 403 on update/delete means this.
-10. **Prefer batch for multi-change drafts.** When staging more than a handful
-    of changes for the same abstraction, use `changes create-batch` with a
-    JSON file instead of looping `changes create`. One transaction, one
-    all-or-nothing response, coalesced websocket broadcasts (the human
-    watching the workspace sees one re-render per section instead of one per
-    change). Max 500 items per batch.
+10. **Stream single creates as you find fields; batch only for bulk imports.**
+    When reading a document and extracting fields one at a time, POST each
+    change the moment you've confirmed the citation — don't hoard them into
+    a batch. Streaming gives the reviewer live progress, preserves partial
+    work on crash or context limit, and costs fewer tokens than composing a
+    large JSON blob. `changes create-batch` is the specialized tool for
+    when you *already have* the whole set assembled from another source
+    (CSV import, cross-abstraction copy, programmatic translation). Max 500
+    items per batch when you do use it.
 11. **Use trigram search instead of paging.** `documents blocks --search "q"`
     hits a pg_trgm GIN index and matches across both block prose and table
     cell text. Queries under 4 chars are rejected client-side — trigrams
     need at least 3 chars to narrow, 4 is the ergonomic floor. Typos score
     partial matches, so spelling need not be exact.
+12. **One source_link entry per document_id.** The server rejects multiple
+    entries citing the same document in one change ("Linkable is already
+    linked"). The CLI auto-merges duplicate `document_id` entries (with
+    fragments concatenated) when you pass `--source-links` or batch JSON,
+    and breadcrumbs when it does. Still best to write one entry per doc
+    up front — the merge is a safety net, not a blessing to be sloppy.
+13. **Don't download the PDF to read it yourself.** When a document has a
+    complete parse, `documents blocks --search "q"` or `--type heading` is
+    faster, produces block-anchored citations the abstraction-review flow
+    depends on, and costs a fraction of the tokens of pulling raw bytes.
+    Downloading and re-extracting loses reading order, table structure,
+    and the `document_block_id` needed to cite cleanly — you'd end up in
+    coord mode with guessed rectangles. Use `documents download` only for
+    file transfer (compliance, forwarding, non-Kestrel consumption), never
+    for data extraction.
 
 ## Output Modes
 
 | Goal                          | Flag       | Format                                                                     |
 |-------------------------------|------------|----------------------------------------------------------------------------|
-| Script/agent data extraction  | `--agent`  | Success: raw `data` only (no envelope). Errors: `{ok:false, error, code}`. |
+| Script/agent data extraction  | `--agent`  | Success: raw `data` for detail/scalar responses; `{data, meta}` for paginated lists (so truncation is detectable). Errors: `{ok:false, error, code}`. |
 | Full JSON envelope            | `--json`   | `{ok, data, meta, summary, breadcrumbs}` — includes CLI-added hints.       |
 | Human display                 | (default)  | Styled table/detail when TTY; JSON when piped. Breadcrumbs to stderr.      |
 | Minimal output for scripts    | `--quiet`  | Same as human mode but suppresses success lines and hints.                 |
 
 **Prefer `--agent` for most agent work** — you get clean `data` without having
-to unwrap `.data` from an envelope. Use `--json` only when you need breadcrumbs
-or pagination metadata.
+to unwrap `.data` from an envelope. Use `--json` only when you need breadcrumbs.
+
+### Pagination in `--agent` mode
+
+Detail/scalar responses emit just the record:
+
+```bash
+kestrel leases show 42 --agent
+# → { "id": 42, "name": "...", ... }
+```
+
+Paginated list responses wrap as `{data, meta}` so you can detect truncation
+(a 50-item page on a 69-item abstraction would look identical to "all 50" if
+we returned a bare array):
+
+```bash
+kestrel abstractions changes list 42 --agent
+# → { "data": [ ... ], "meta": { "page": 1, "next_page": 2, "count": 69 } }
+
+kestrel documents blocks 87 --agent
+# → { "data": [ ... ], "meta": { "count": 500, "limit": 500, "next_since_order": 4821 } }
+```
+
+Check `meta.next_page` (offset paging) or `meta.next_since_order` (cursor
+paging) to tell whether more data exists. A `null` or missing value means
+you've got everything.
 
 ## CLI Introspection
 
@@ -138,15 +180,15 @@ For the flat catalog (all commands at once) use `kestrel commands --json`.
 | Component areas, securities, clauses | `kestrel leases component-areas \| securities \| clauses <lease-id> --agent`                             |
 | Expense with payments + increases    | `kestrel expenses show <id> --agent` / `kestrel expenses payments <id>` / `kestrel expenses increases <id>` |
 | Document metadata                    | `kestrel documents show <id> --agent`                                                                    |
-| Document file                        | `kestrel documents download <id> [-o file]`                                                              |
-| Print signed URL only                | `kestrel documents download <id> --url`                                                                  |
 | Parse status                         | `kestrel documents parse <id> --agent`                                                                   |
 | Wait for parse                       | `kestrel documents parse <id> --wait [--timeout 300]`                                                    |
 | Pages of parsed version              | `kestrel documents pages <id> --agent`                                                                   |
-| Walk block graph                     | `kestrel documents blocks <id> [--page N] [--type heading] [--since-order N] --agent`                    |
-| Search block text                    | `kestrel documents blocks <id> --search "commencement" --agent`    (trigram, 4+ chars, searches cells too) |
+| Search block text (preferred)        | `kestrel documents blocks <id> --search "commencement" --agent`    (trigram, 4+ chars, searches cells too) |
+| Walk block graph by structure        | `kestrel documents blocks <id> [--page N] [--type heading] [--since-order N] --agent`                    |
 | Blocks near one block                | `kestrel documents blocks <id> --near <block-id> --window 3 --agent`                                     |
 | Inspect single block                 | `kestrel documents block <block-id> --agent`                                                             |
+| Download raw file (transfer only)    | `kestrel documents download <id> [-o file]`    (for data extraction, use blocks instead)                 |
+| Print signed URL only                | `kestrel documents download <id> --url`                                                                  |
 | Org field config                     | `kestrel field-configs list --agent`                                                                     |
 | List templates                       | `kestrel templates list --agent`                                                                         |
 | Template authoring schema            | `kestrel templates schema <id> --agent`                                                                  |
@@ -163,7 +205,7 @@ For the flat catalog (all commands at once) use `kestrel commands --json`.
 | Coord-mode citation (fallback)       | `… --source-links '[{"document_id":D,"fragments":[{"page_number":3,"x":0.1,"y":0.2,"width":0.3,"height":0.05}]}]'` |
 | List staged changes                  | `kestrel abstractions changes list <abs-id> --agent`                                                     |
 | Filter by state                      | `kestrel abstractions changes list <abs-id> --state rejected --agent`  (repeatable)                      |
-| Batch-create N changes atomically    | `kestrel abstractions changes create-batch <abs-id> --file @batch.json`  (max 500, all-or-nothing)       |
+| Bulk import N changes (not interactive) | `kestrel abstractions changes create-batch <abs-id> --file @batch.json`  (max 500, all-or-nothing)    |
 | Update a change                      | `kestrel abstractions changes update <abs-id> <change-id> --payload @new.json`                           |
 | Delete a change                      | `kestrel abstractions changes delete <abs-id> <change-id>`                                               |
 | Abandon an abstraction               | `kestrel abstractions abandon <abs-id>`                                                                  |
@@ -185,8 +227,11 @@ Need to find something?
 │   └── kestrel expenses payments <expense-id> --agent
 │   └── kestrel expenses increases <expense-id> --agent
 └── Need a document?
-    └── kestrel documents show <id> --agent    (metadata)
-    └── kestrel documents download <id> -o /tmp/  (binary)
+    ├── Metadata: kestrel documents show <id> --agent
+    ├── Read content / find values to cite:
+    │   └── kestrel documents blocks <id> --search "..." --agent   (preferred — block-anchored)
+    │   └── kestrel documents blocks <id> --type heading --agent   (structural navigation)
+    └── File transfer only (compliance/forwarding): kestrel documents download <id> -o /tmp/
 ```
 
 ### Authoring an abstraction
@@ -213,15 +258,13 @@ Want to change lease data?
 │   └── kestrel documents blocks <doc-id> --near <id> --window 3 --agent  (context)
 ├── 5. Discover what fields are expected
 │   └── kestrel abstractions schema <abs-id> --agent
-├── 6. Draft changes — cite blocks
-│   ├── For many changes at once (typical agent pass):
-│   │   └── kestrel abstractions changes create-batch <abs-id> --file @batch.json
-│   │       (all-or-nothing, ≤500 items, coalesced broadcasts)
-│   └── For single changes (exploratory):
-│       └── Scalar update: --action update --target-type Lease --target-id L --payload '{…}' --cite-block <block-id>
-│       └── Substring: --cite-block <block-id>:chars=14-72
-│       └── Table cell: --cite-block <block-id>:cell=2,1
-│       └── Sub-object create: --action create --target-type KeyDate --sub-object-group new --payload '{…}' --cite-block <block-id>
+├── 6. Draft changes — stream one per field as you confirm each citation
+│   ├── Scalar update: --action update --target-type Lease --target-id L --payload '{…}' --cite-block <block-id>
+│   ├── Substring citation: --cite-block <block-id>:chars=14-72
+│   ├── Table cell citation: --cite-block <block-id>:cell=2,1
+│   ├── Sub-object create: --action create --target-type KeyDate --sub-object-group new --payload '{…}' --cite-block <block-id>
+│   └── Bulk import path (only when you already have the whole set):
+│       kestrel abstractions changes create-batch <abs-id> --file @batch.json
 └── 7. (Human completes in web UI: review, approve, go-live)
 ```
 
@@ -262,9 +305,66 @@ kestrel documents blocks "$DOC" --near 4201 --window 3 --agent
 # 7. Confirm the exact block before citing (optional but cheap).
 kestrel documents block 4215 --agent
 
-# 8. Batch-draft the whole abstraction in one atomic call.
-#    One transaction, coalesced broadcasts, per-item rollback on failure.
-#    Max 500 items per batch.
+# 8. Draft changes — stream one per field as you confirm each citation.
+#    Each POST is idempotent (dedup by tuple), so retries are safe.
+#    The reviewer sees work land live; partial progress survives crashes.
+
+kestrel abstractions changes create "$ABS" \
+  --action create --target-type Property \
+  --payload '{"name":"123 Main St","city":"Austin","country":"US"}' \
+  --cite-block 4215 --agent
+
+kestrel abstractions changes create "$ABS" \
+  --action create --target-type Lease \
+  --payload '{"name":"Ground Floor","start_date":"2026-01-01","end_date":"2030-12-31"}' \
+  --cite-block 4240:chars=14-72 --agent
+
+# Sub-object — mint one UUID, reuse it for every field in this instance.
+EXPENSE_GROUP=$(uuidgen)
+kestrel abstractions changes create "$ABS" \
+  --action create --target-type Expense --sub-object-group "$EXPENSE_GROUP" \
+  --payload '{"name":"Base Rent"}' \
+  --cite-block 4301:cell=2,1 --agent
+kestrel abstractions changes create "$ABS" \
+  --action create --target-type Expense --sub-object-group "$EXPENSE_GROUP" \
+  --payload '{"amount":5000}' \
+  --cite-block 4301:cell=2,2 --agent
+kestrel abstractions changes create "$ABS" \
+  --action create --target-type Expense --sub-object-group "$EXPENSE_GROUP" \
+  --payload '{"currency":"USD"}' \
+  --cite-block 4301:cell=2,3 --agent
+
+# KeyDate — same pattern.
+KEYDATE_GROUP=$(uuidgen)
+kestrel abstractions changes create "$ABS" \
+  --action create --target-type KeyDate --sub-object-group "$KEYDATE_GROUP" \
+  --payload '{"name":"Expiration"}' \
+  --cite-block 4280 --agent
+kestrel abstractions changes create "$ABS" \
+  --action create --target-type KeyDate --sub-object-group "$KEYDATE_GROUP" \
+  --payload '{"date":"2030-12-31"}' \
+  --cite-block 4280 --agent
+
+# 9. Audit what landed — list view includes source_links_preview per change.
+#    Output is {data, meta} in --agent mode so you can detect truncation.
+kestrel abstractions changes list "$ABS" --agent
+kestrel abstractions changes list "$ABS" --state rejected --agent   # revisions that need rework
+
+# 10. Human reviews + approves + go-lives in the web UI. The CLI cannot do this.
+```
+
+### Bulk import (when you already have the whole set)
+
+`changes create-batch` is for the specialized case where you've already
+assembled the full list of changes from another source — a CSV, another
+abstraction, an external system — and just need to load them. All-or-
+nothing transaction, coalesced broadcasts, up to 500 items per call.
+Don't use it during interactive authoring; streaming creates gives the
+reviewer live progress, preserves partial work on failure, and costs
+fewer tokens than composing a large JSON file.
+
+```bash
+# Example: loading an abstraction from a pre-translated CSV.
 cat > /tmp/batch.json <<EOF
 [
   {
@@ -276,51 +376,20 @@ cat > /tmp/batch.json <<EOF
     "action": "create", "target_type": "Lease",
     "payload": {"name":"Ground Floor","start_date":"2026-01-01","end_date":"2030-12-31"},
     "source_links": [{"document_id": $DOC, "fragments":[{"document_block_id":4240,"char_start":14,"char_end":72}]}]
-  },
-  {
-    "action": "create", "target_type": "Expense", "sub_object_group": "$(uuidgen)",
-    "payload": {"name":"Base Rent","amount":5000,"currency":"USD"},
-    "source_links": [{"document_id": $DOC, "fragments":[{"document_block_id":4301,"table_cell_row":2,"table_cell_col":1}]}]
-  },
-  {
-    "action": "create", "target_type": "KeyDate", "sub_object_group": "$(uuidgen)",
-    "payload": {"name":"Expiration","date":"2030-12-31","notice_deadline":true},
-    "source_links": [{"document_id": $DOC, "fragments":[{"document_block_id":4280}]}]
   }
 ]
 EOF
 
 kestrel abstractions changes create-batch "$ABS" --file @/tmp/batch.json --agent
-
-# 9. If any item failed, every change rolled back and you get per-item errors
-#    keyed by input index. Fix the flagged items and retry the whole batch.
-
-# 10. Audit what landed — list view includes source_links_preview per change.
-kestrel abstractions changes list "$ABS" --agent
-kestrel abstractions changes list "$ABS" --state rejected --agent   # revisions that need rework
-
-# 11. Human reviews + approves + go-lives in the web UI. The CLI cannot do this.
-```
-
-### Iterative single-change drafting (exploratory flow)
-
-For discovery work — "does this field exist, does this citation make sense" —
-draft one change at a time with `--cite-block`. Once you know the full set
-of changes, switch to `create-batch` with a JSON file for the real pass.
-
-```bash
-# Single-change create — the CLI resolves each cite-block's document_id for you.
-kestrel abstractions changes create "$ABS" \
-  --action create --target-type Lease \
-  --payload '{"name":"Ground Floor"}' \
-  --cite-block 4240 --agent
+# If any item fails, every change rolls back and you get per-item errors
+# keyed by input index. Fix the flagged items and retry the whole batch.
 ```
 
 ### Revise a rejected change
 
 ```bash
 # When the web reviewer rejects a change, the rejection reason is attached.
-kestrel abstractions changes list 42 --agent | jq '.[] | select(.state == "rejected")'
+kestrel abstractions changes list 42 --state rejected --agent | jq '.data[]'
 
 # Resubmit with corrected payload — revised_from is auto-linked to the
 # rejected predecessor, preserving the review chain.

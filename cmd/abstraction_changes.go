@@ -343,7 +343,11 @@ Examples:
 			if err := json.Unmarshal([]byte(slStr), &links); err != nil {
 				return fmt.Errorf("parsing --source-links as JSON: %w", err)
 			}
-			change["source_links"] = links
+			merged, count := mergeSourceLinks(links)
+			if count > 0 {
+				printer.Breadcrumb(fmt.Sprintf("Merged %d duplicate source_links entry/entries into one per document_id", count))
+			}
+			change["source_links"] = merged
 		}
 		if len(changesCreateCiteBlocks) > 0 {
 			links, err := resolveCiteBlocks(changesCreateCiteBlocks)
@@ -406,7 +410,11 @@ empty array (--source-links '[]') to clear them.`,
 			if err := json.Unmarshal([]byte(s), &links); err != nil {
 				return fmt.Errorf("parsing --source-links as JSON: %w", err)
 			}
-			change["source_links"] = links
+			merged, count := mergeSourceLinks(links)
+			if count > 0 {
+				printer.Breadcrumb(fmt.Sprintf("Merged %d duplicate source_links entry/entries into one per document_id", count))
+			}
+			change["source_links"] = merged
 		}
 		if len(change) == 0 {
 			return &UsageError{Arg: "payload or source-links", Usage: "kestrel abstractions changes update <abs-id> <change-id> --payload ... [--source-links ...]"}
@@ -508,6 +516,27 @@ Example batch file:
 				Arg:   "file",
 				Usage: fmt.Sprintf("batch size %d exceeds server max of %d — split into multiple batches", len(changes), batchMaxItems),
 			}
+		}
+
+		// Pre-merge duplicate source_links per item so agents don't trip the
+		// server's "Linkable is already linked" rejection — which rolls back
+		// the whole batch.
+		totalMerges := 0
+		for _, item := range changes {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if links, exists := m["source_links"]; exists {
+				merged, count := mergeSourceLinks(links)
+				if count > 0 {
+					m["source_links"] = merged
+					totalMerges += count
+				}
+			}
+		}
+		if totalMerges > 0 {
+			printer.Breadcrumb(fmt.Sprintf("Merged %d duplicate source_links entry/entries across batch items", totalMerges))
 		}
 
 		status, body, err := client.PostRaw(
@@ -656,6 +685,85 @@ func summarizeLinkPreview(previews []abstractionLinkPreview) string {
 		return fmt.Sprintf("%s (+%d)", head, fragCount-1)
 	}
 	return head
+}
+
+// mergeSourceLinks collapses duplicate document_id entries into one, with the
+// fragments arrays concatenated in input order. The server rejects a batch
+// when multiple source_links entries cite the same document ("Linkable is
+// already linked"), so agents writing {doc_id: 1, fragments: [A]} and
+// {doc_id: 1, fragments: [B]} separately would otherwise hit 422.
+//
+// Returns (merged, mergedCount). mergedCount > 0 means duplicates were
+// collapsed; the caller can breadcrumb a warning.
+func mergeSourceLinks(raw any) (any, int) {
+	arr, ok := raw.([]any)
+	if !ok {
+		return raw, 0
+	}
+	byDoc := map[int]map[string]any{}
+	docOrder := []int{}
+	mergeCount := 0
+	for _, item := range arr {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return raw, 0
+		}
+		docIDRaw, exists := m["document_id"]
+		if !exists {
+			return raw, 0
+		}
+		docID, ok := coerceInt(docIDRaw)
+		if !ok {
+			return raw, 0
+		}
+		if existing, seen := byDoc[docID]; seen {
+			mergeCount++
+			efrags, _ := existing["fragments"].([]any)
+			nfrags, _ := m["fragments"].([]any)
+			existing["fragments"] = append(efrags, nfrags...)
+			continue
+		}
+		// Shallow-copy so we don't mutate the caller's input when we
+		// later append fragments.
+		copied := map[string]any{}
+		for k, v := range m {
+			copied[k] = v
+		}
+		if frags, ok := copied["fragments"].([]any); ok {
+			dup := make([]any, len(frags))
+			copy(dup, frags)
+			copied["fragments"] = dup
+		}
+		byDoc[docID] = copied
+		docOrder = append(docOrder, docID)
+	}
+	if mergeCount == 0 {
+		return raw, 0
+	}
+	out := make([]any, 0, len(docOrder))
+	for _, docID := range docOrder {
+		out = append(out, byDoc[docID])
+	}
+	return out, mergeCount
+}
+
+// coerceInt handles the two shapes a numeric JSON value takes in an
+// any-typed map: float64 (default unmarshal) or json.Number (decoder with
+// UseNumber). Neither is guaranteed by our input, so accept both.
+func coerceInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case float64:
+		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(i), true
+	}
+	return 0, false
 }
 
 // resolveCiteBlocks converts --cite-block specs into the source_links shape the

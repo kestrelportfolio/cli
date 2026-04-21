@@ -162,12 +162,21 @@ func (p *Printer) emitAgent(raw []byte) {
 		fmt.Println(string(raw))
 		return
 	}
-	// Success: emit just the `data` field. Errors: full {ok:false,...} shape
-	// (including errors array / code / hint) so agents can branch on failure.
+	// Success: emit just the `data` field by default. For paginated list
+	// responses, wrap as {data, meta} so agents can detect truncation — a
+	// bare array can't tell the difference between "50 of 50" and "50 of
+	// 500". Detail/scalar responses (no meta) stay bare. Errors always emit
+	// the full {ok:false,...} shape so agents can branch on failure.
 	if ok, _ := env["ok"].(bool); ok {
 		data, exists := env["data"]
 		if !exists {
 			data = nil
+		}
+		if meta, hasMeta := env["meta"].(map[string]any); hasMeta && isPaginationMeta(meta) {
+			wrapped := map[string]any{"data": data, "meta": meta}
+			out, _ := json.MarshalIndent(wrapped, "", "  ")
+			fmt.Println(string(out))
+			return
 		}
 		out, _ := json.MarshalIndent(data, "", "  ")
 		fmt.Println(string(out))
@@ -175,6 +184,20 @@ func (p *Printer) emitAgent(raw []byte) {
 	}
 	out, _ := json.MarshalIndent(env, "", "  ")
 	fmt.Println(string(out))
+}
+
+// isPaginationMeta reports whether a meta object carries pagination signals
+// (next_page or count). Endpoints with meta unrelated to pagination — e.g.
+// /documents/.../blocks returning {count, limit, next_since_order} — also
+// return true; wrapping is the conservative choice since agents benefit from
+// the signal either way.
+func isPaginationMeta(meta map[string]any) bool {
+	for _, key := range []string{"next_page", "count", "next_since_order"} {
+		if _, ok := meta[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Printer) flushTTY() {

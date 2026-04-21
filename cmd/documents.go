@@ -106,9 +106,17 @@ var (
 
 var documentsDownloadCmd = &cobra.Command{
 	Use:   "download <id>",
-	Short: "Download a document's file (or print the signed URL with --url)",
-	Long: `Fetches the file bytes for a document. By default writes to the filename
-from the latest version; use -o to override, or - to write to stdout.
+	Short: "Download a document's raw file bytes (or print the signed URL with --url)",
+	Long: `Fetches the raw file bytes for a document. For transferring the file —
+compliance exports, emailing the signed lease, feeding into non-Kestrel
+systems. By default writes to the filename from the latest version; use -o
+to override, or - to write to stdout.
+
+For data extraction — finding values to cite in an abstraction — use
+'kestrel documents blocks' instead. The structured parse produces
+block-anchored citations that the abstraction-review flow depends on.
+Downloading and re-extracting yourself loses reading order, table
+structure, and the document_block_id you need to cite cleanly.
 
 Use --version N to fetch a specific version, or --url to print only the
 short-lived signed URL without downloading.`,
@@ -130,6 +138,7 @@ short-lived signed URL without downloading.`,
 
 		if documentsDownloadURLOnly {
 			fmt.Println(signedURL)
+			blocksBreadcrumb(args[0])
 			return nil
 		}
 
@@ -180,8 +189,18 @@ short-lived signed URL without downloading.`,
 		if out != "-" {
 			printer.Success(fmt.Sprintf("Wrote %d bytes to %s", n, out))
 		}
+		blocksBreadcrumb(args[0])
 		return nil
 	},
+}
+
+// blocksBreadcrumb nudges callers toward the structured-parse surface when
+// they download a document. Agents default to "fetch PDF → read it" and lose
+// block-anchored citations; this points them at the better primitive without
+// blocking the legitimate file-transfer use case.
+func blocksBreadcrumb(docID string) {
+	printer.Breadcrumb(fmt.Sprintf("For data extraction, prefer: kestrel documents blocks %s --search \"...\"", docID))
+	printer.Breadcrumb("Downloads are for file transfer (compliance, forwarding). For abstraction citations, block-ref beats self-extraction.")
 }
 
 func init() {
