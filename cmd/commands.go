@@ -257,10 +257,16 @@ func commandCatalog() []CommandCategory {
 					Flags:       []string{"--version"},
 				},
 				{
+					Name:        "documents search",
+					Usage:       "kestrel documents search <doc-id> <query> [--version N] [--page N] [--type T] [--limit N]",
+					Description: "Find blocks by text — the preferred way to locate values (trigram, 4+ chars, tolerates typos)",
+					Flags:       []string{"--version", "--page", "--type", "--limit"},
+				},
+				{
 					Name:        "documents blocks",
-					Usage:       "kestrel documents blocks <doc-id> [--version N] [--page N] [--type T] [--search Q] [--since-order N] [--near ID --window K] [--limit N]",
-					Description: "Walk the reading-ordered block graph. Trigram text search, filters, cursor, neighborhood",
-					Flags:       []string{"--version", "--page", "--type", "--search", "--since-order", "--near", "--window", "--limit"},
+					Usage:       "kestrel documents blocks <doc-id> [--version N] [--page N] [--type T] [--since-order N] [--near ID --window K] [--limit N]",
+					Description: "Structural navigation of the block graph (pages, types, cursors, neighborhoods). For value lookup, use `documents search`",
+					Flags:       []string{"--version", "--page", "--type", "--since-order", "--near", "--window", "--limit", "--search"},
 				},
 				{
 					Name:        "documents block",
@@ -371,6 +377,12 @@ func commandCatalog() []CommandCategory {
 					Usage:       "kestrel abstractions changes create-batch <abstraction-id> --file @batch.json",
 					Description: "Create up to 500 changes atomically. Per-item errors roll back the whole batch",
 					Flags:       []string{"--file"},
+				},
+				{
+					Name:        "abstractions changes new-group",
+					Usage:       "kestrel abstractions changes new-group <abstraction-id> --target-type <Model>",
+					Description: "Mint a server-issued sub_object_group UUID for a new sub-object instance (prints UUID on stdout)",
+					Flags:       []string{"--target-type"},
 				},
 				{
 					Name:        "abstractions changes update",

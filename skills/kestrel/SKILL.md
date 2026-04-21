@@ -51,21 +51,47 @@ web UI before it goes live.
    rejected. Upload a PDF via `kestrel abstractions add-doc` first, then
    cite it via `--cite-block` (parsed-block citations, preferred) or
    `--source-links` (raw JSON for coord-mode).
-3. **Prefer block-ref citations over coord rectangles.** When the document has
+3. **Search first. Walk second.** For any specific value you need to cite —
+   a date, rent amount, party name, address, clause — start with
+   `kestrel documents search <doc-id> "<phrase>"`. Trigram-indexed, searches
+   both prose and table cell text, returns in reading order, tolerates typos
+   ("commencment" still hits "commencement"). Walking structurally with
+   `documents blocks --type heading` or `--near` is 5–10× more expensive on
+   tokens and almost always unnecessary when you know *what* you're looking
+   for. Reserve structural walks for when you don't know what you're
+   looking for (initial document scan) or need context around a block you
+   already found (`--near <block-id>`). Min 4 characters on the query.
+4. **Read the template `guidance` on every required field before drafting.**
+   Each field in the schema response carries optional `guidance` prose
+   authored by the template designer. It encodes house conventions the raw
+   document doesn't teach, for example:
+   - "If the lease is silent on this clause, write 'Lease is silent for
+     this clause' rather than skipping it."
+   - "Use absolute dates; resolve relative phrases like '30 days after
+     delivery' to a concrete date."
+   - "Include suffixes like LLC, Inc. in the tenant name."
+
+   Skipping a required field because the document doesn't address it
+   cleanly is almost never correct — the template usually wants an
+   explicit sentinel answer. Call `kestrel abstractions schema <abs-id>`
+   (or `templates schema <tpl-id>` before create) and scan the Guidance
+   block before drafting values. In `--agent` / `--json` mode the
+   `guidance` string lives on each field-entry in the JSON response.
+5. **Prefer block-ref citations over coord rectangles.** When the document has
    been parsed, cite by `document_block_id` — the server derives coords +
    `cited_text` from the parse. Narrow to a substring with `char_start`/`end`
    or to a specific table cell with `table_cell_row`/`col`. Use coord mode
    only when the parse hasn't rendered the thing you need to cite.
-4. **Wait for parse before citing blocks.** Parses are triggered on attach,
+6. **Wait for parse before citing blocks.** Parses are triggered on attach,
    not upload. After `add-doc`, call `documents parse <doc-id> --wait` (or
    pass `--wait-parse` to `add-doc`) before you start reading blocks. Status
    `complete` means blocks are queryable; `failed` means fall back to coord
    mode or a different document.
-5. **Use `--agent` for scripting**, `--json` when you need the envelope
+7. **Use `--agent` for scripting**, `--json` when you need the envelope
    (breadcrumbs, meta), `--quiet`/no flag for human display.
-6. **Check auth before anything else.** Exit code 3 means "no token or
+8. **Check auth before anything else.** Exit code 3 means "no token or
    expired". Run `kestrel login` to fix.
-7. **Dedup is automatic on pending api-sourced changes.** Re-POSTing
+9. **Dedup is automatic on pending api-sourced changes.** Re-POSTing
    `changes create` with the same
    `(action, target_type, target_field, sub_object_group)` tuple updates the
    existing pending api-sourced change and returns 200 (not 201). Payload is
@@ -76,26 +102,39 @@ web UI before it goes live.
    revised_from chain and the audit trail, so PATCH/DELETE refuse with 422.
    To change a rejected value, POST a new create; `revised_from_id`
    auto-links to the rejected predecessor.
-8. **Sub-object fields group via UUID.** When creating a new KeyDate, Expense,
-   or other sub-object, every field change for that instance shares a
-   `sub_object_group` UUID. Mint one with `--sub-object-group new` on the
-   first change; reuse the UUID in breadcrumbs for sibling fields.
-9. **Channel-lock: one pending non-default change per tuple, per channel.**
-   Every field has a pending slot on `(action, target_type, target_field,
-   sub_object_group)`. At most one `pending` non-default change can occupy
-   it at a time; the source of that change identifies which channel holds
-   it. Consequences:
-   - Editing (PATCH/DELETE): api changes can only be edited via the API;
-     web_ui changes are read-only to the CLI (403).
-   - Drafting (POST): api POSTs against a slot already held by a pending
-     web_ui change return 422 `channel_locked` naming the conflict id —
-     reject the web_ui change in the web UI first, then POST.
-   - The one exception: `default`-sourced scaffolds transparently supersede
-     on POST (matching payload → no-op, differing payload → default
-     rejected + new change linked via `revised_from_id`). Conditional
-     sub-object scaffolds (e.g. pre-filled "Lease Expiration" KeyDate) are
-     `default`-sourced, so agents can overwrite them cleanly.
-10. **Stream single creates as you find fields; batch only for bulk imports.**
+10. **Sub-object fields group via a server-minted UUID.** Every new sub-object
+    instance (a new KeyDate, Expense, LeaseClause, etc.) is identified by a
+    `sub_object_group` UUID that must be issued by the server. Client-
+    generated UUIDs are rejected with `sub_object_group_unknown`. Two ways
+    to mint:
+    - Transparent: `kestrel abstractions changes create ... --sub-object-group new`
+      auto-mints before POST and echoes the UUID in breadcrumbs. Use this
+      for streaming single creates.
+    - Explicit: `kestrel abstractions changes new-group <abs-id> --target-type <T>`
+      prints the UUID to stdout. Use this when composing a batch JSON file —
+      mint one UUID per sub-object instance first, then embed each in the
+      batch items that belong to that instance.
+
+    A minted UUID is bound to the target_type it was minted for; using it
+    with a different target_type hits `sub_object_group_target_type_mismatch`.
+    Property/Lease creates MUST NOT carry a group — they write directly
+    against the abstraction's root record.
+11. **Channel-lock: one pending non-default change per tuple, per channel.**
+    Every field has a pending slot on `(action, target_type, target_field,
+    sub_object_group)`. At most one `pending` non-default change can occupy
+    it at a time; the source of that change identifies which channel holds
+    it. Consequences:
+    - Editing (PATCH/DELETE): api changes can only be edited via the API;
+      web_ui changes are read-only to the CLI (403).
+    - Drafting (POST): api POSTs against a slot already held by a pending
+      web_ui change return 422 `channel_locked` naming the conflict id —
+      reject the web_ui change in the web UI first, then POST.
+    - The one exception: `default`-sourced scaffolds transparently supersede
+      on POST (matching payload → no-op, differing payload → default
+      rejected + new change linked via `revised_from_id`). Conditional
+      sub-object scaffolds (e.g. pre-filled "Lease Expiration" KeyDate) are
+      `default`-sourced, so agents can overwrite them cleanly.
+12. **Stream single creates as you find fields; batch only for bulk imports.**
     When reading a document and extracting fields one at a time, POST each
     change the moment you've confirmed the citation — don't hoard them into
     a batch. Streaming gives the reviewer live progress, preserves partial
@@ -104,23 +143,21 @@ web UI before it goes live.
     when you *already have* the whole set assembled from another source
     (CSV import, cross-abstraction copy, programmatic translation). Max 500
     items per batch when you do use it.
-11. **Use trigram search instead of paging.** `documents blocks --search "q"`
-    hits a pg_trgm GIN index and matches across both block prose and table
-    cell text. Queries under 4 chars are rejected client-side — trigrams
-    need at least 3 chars to narrow, 4 is the ergonomic floor. Typos score
-    partial matches, so spelling need not be exact.
-12. **One payload key per change, except on primary targets.** The server
-    rejects multi-key payloads on single-field changes with 422
-    `payload_extra_keys`. The structural rule: a change is single-key if it
-    has `target_field` set, or is an `update`, or is a `create` on a
-    non-primary target. Primary targets (Property, Lease) are the only
-    models that accept multi-field `create` payloads. Infer from the
-    `/schema` response rather than hardcoding model names: any model with
-    `primary: true` takes multi-key creates; everything else is one key per
-    change. Stream one change per field using `sub_object_group` to glue
-    siblings into one sub-object instance.
-13. **Don't download the PDF to read it yourself.** When a document has a
-    complete parse, `documents blocks --search "q"` or `--type heading` is
+13. **One payload key per change. Always.** The server rejects multi-key
+    payloads on any create or update with 422 `payload_extra_keys` —
+    including Property and Lease creates. The rule is uniform across every
+    target_type: one field value per change, one change per field value.
+    The reason is provenance binding: a change with N values and M
+    highlights in `source_links` has no way to map which highlight backs
+    which value, so the reviewer's 1:1 field→evidence check collapses.
+    Streaming per-field creates keeps each value paired with exactly its
+    source block(s), and multi-field record creation still works — the
+    applier merges per-field siblings at go-live, same as sub-objects do
+    via `sub_object_group`. Round-trip-sensitive flows compose N per-field
+    items into `changes create-batch`; every batch item has the same
+    shape regardless of target_type.
+14. **Don't download the PDF to read it yourself.** When a document has a
+    complete parse, `documents search "q"` or `documents blocks --type heading` is
     faster, produces block-anchored citations the abstraction-review flow
     depends on, and costs a fraction of the tokens of pulling raw bytes.
     Downloading and re-extracting loses reading order, table structure,
@@ -168,94 +205,47 @@ you've got everything.
 
 ## CLI Introspection
 
-Every command supports `--help --agent` to return structured metadata as JSON:
+Two discovery entrypoints return JSON:
 
-```bash
-kestrel abstractions --help --agent
-```
-
-Returns:
-
-```json
-{
-  "command": "abstractions",
-  "path": "kestrel abstractions",
-  "short": "Author abstractions …",
-  "long": "…",
-  "subcommands": [{"name":"create","path":"kestrel abstractions create","short":"…"}, …],
-  "flags": [{"name":"…","type":"…","default":"…","usage":"…"}]
-}
-```
-
-Walk the tree: start at `kestrel --help --agent`, drill into any subcommand.
-For the flat catalog (all commands at once) use `kestrel commands --json`.
+- `kestrel <cmd> --help --agent` — per-command metadata (short/long/flags/subcommands). Walk the tree from the root.
+- `kestrel commands --json` — flat catalog of every command.
 
 ## Quick Reference
 
+Read surface (properties, leases, expenses, lease-securities, field-configs,
+`documents show`, `documents download`, `me`) is uniform — discover via
+`kestrel commands --json` or `kestrel <cmd> --help --agent`. Rows below are
+abstraction- and parse-specific patterns that aren't obvious from
+introspection.
+
 | Task                                 | Command                                                                                                  |
 |--------------------------------------|----------------------------------------------------------------------------------------------------------|
-| Who am I?                            | `kestrel me --agent`                                                                                     |
-| List properties                      | `kestrel properties list --agent`                                                                        |
-| Show a property                      | `kestrel properties show <id> --agent`                                                                   |
-| Leases on a property                 | `kestrel properties leases <prop-id> --agent`                                                            |
-| Show a lease                         | `kestrel leases show <id> --agent`                                                                       |
-| Lease expenses / docs / key dates    | `kestrel leases expenses \| documents \| key-dates <lease-id> --agent`                                   |
-| Component areas, securities, clauses | `kestrel leases component-areas \| securities \| clauses <lease-id> --agent`                             |
-| Expense with payments + increases    | `kestrel expenses show <id> --agent` / `kestrel expenses payments <id>` / `kestrel expenses increases <id>` |
-| Document metadata                    | `kestrel documents show <id> --agent`                                                                    |
-| Parse status                         | `kestrel documents parse <id> --agent`                                                                   |
-| Wait for parse                       | `kestrel documents parse <id> --wait [--timeout 300]`                                                    |
-| Pages of parsed version              | `kestrel documents pages <id> --agent`                                                                   |
-| Search block text (preferred)        | `kestrel documents blocks <id> --search "commencement" --agent`    (trigram, 4+ chars, searches cells too) |
-| Walk block graph by structure        | `kestrel documents blocks <id> [--page N] [--type heading] [--since-order N] --agent`                    |
-| Blocks near one block                | `kestrel documents blocks <id> --near <block-id> --window 3 --agent`                                     |
+| Find a value in a parsed doc         | `kestrel documents search <doc-id> "commencement" --agent`    (trigram, 4+ chars, searches cells too, tolerates typos) |
+| Walk block graph by structure        | `kestrel documents blocks <doc-id> [--page N] [--type heading] [--since-order N] --agent`                |
+| Blocks near one block                | `kestrel documents blocks <doc-id> --near <block-id> --window 3 --agent`                                 |
 | Inspect single block                 | `kestrel documents block <block-id> --agent`                                                             |
-| Download raw file (transfer only)    | `kestrel documents download <id> [-o file]`    (for data extraction, use blocks instead)                 |
-| Print signed URL only                | `kestrel documents download <id> --url`                                                                  |
-| Org field config                     | `kestrel field-configs list --agent`                                                                     |
-| List templates                       | `kestrel templates list --agent`                                                                         |
-| Template authoring schema            | `kestrel templates schema <id> --agent`                                                                  |
+| Wait for parse                       | `kestrel documents parse <doc-id> --wait [--timeout 300]`                                                |
+| Templates + authoring schema         | `kestrel templates list --agent` / `kestrel templates schema <id> --agent`                               |
 | Create greenfield abstraction        | `kestrel abstractions create --template-id N --kind greenfield --agent`                                  |
 | Create brownfield abstraction        | `kestrel abstractions create --template-id N --kind brownfield --target-property-id P --target-lease-id L --agent` |
 | Show abstraction schema              | `kestrel abstractions schema <abs-id> --agent`                                                           |
-| Add source PDF (and wait for parse)  | `kestrel abstractions add-doc <abs-id> lease.pdf --wait-parse`                                           |
-| List attached sources                | `kestrel abstractions sources <abs-id> --agent`                                                          |
-| Destroy a source doc                 | `kestrel abstractions remove-doc <abs-id> --document-id N`                                               |
-| Draft a scalar update w/ block cite  | `kestrel abstractions changes create <abs-id> --action update --target-type Lease --target-id L --payload '{"name":"…"}' --cite-block <block-id>` |
-| Cite a table cell                    | `kestrel abstractions changes create <abs-id> … --cite-block <block-id>:cell=2,1`                        |
-| Cite a substring                     | `kestrel abstractions changes create <abs-id> … --cite-block <block-id>:chars=14-72`                     |
-| Draft a sub-object create            | `kestrel abstractions changes create <abs-id> --action create --target-type KeyDate --sub-object-group new --payload '{"name":"…","date":"…"}' --cite-block <block-id>` |
-| Coord-mode citation (fallback)       | `… --source-links '[{"document_id":D,"fragments":[{"page_number":3,"x":0.1,"y":0.2,"width":0.3,"height":0.05}]}]'` |
-| List staged changes                  | `kestrel abstractions changes list <abs-id> --agent`                                                     |
-| Filter by state                      | `kestrel abstractions changes list <abs-id> --state rejected --agent`  (repeatable)                      |
-| Bulk import N changes (not interactive) | `kestrel abstractions changes create-batch <abs-id> --file @batch.json`  (max 500, all-or-nothing)    |
-| Update a change                      | `kestrel abstractions changes update <abs-id> <change-id> --payload @new.json`                           |
-| Delete a change                      | `kestrel abstractions changes delete <abs-id> <change-id>`                                               |
+| Add source PDF + wait for parse      | `kestrel abstractions add-doc <abs-id> lease.pdf --wait-parse`                                           |
+| List / destroy source docs           | `kestrel abstractions sources <abs-id> --agent` / `remove-doc <abs-id> --document-id N`                  |
+| Mint sub-object group up-front       | `GROUP=$(kestrel abstractions changes new-group <abs-id> --target-type KeyDate)`                         |
+| Draft a scalar update w/ block cite  | `kestrel abstractions changes create <abs-id> --action update --target-type Lease --target-id L --target-field name --payload '{"name":"…"}' --cite-block <block-id>` |
+| Cite narrowing                       | `--cite-block <block-id>:chars=14-72` (substring) / `--cite-block <block-id>:cell=2,1` (table cell)      |
+| Draft a sub-object field (new inst.) | `--action create --target-type KeyDate --sub-object-group new --target-field name --payload '{"name":"…"}' --cite-block <block-id>`  (reuse minted UUID for sibling fields) |
+| Coord-mode citation (fallback)       | `--source-links '[{"document_id":D,"fragments":[{"page_number":3,"x":0.1,"y":0.2,"width":0.3,"height":0.05}]}]'` |
+| List / filter staged changes         | `kestrel abstractions changes list <abs-id> [--state rejected] --agent`                                  |
+| Bulk import N changes                | `kestrel abstractions changes create-batch <abs-id> --file @batch.json`  (max 500, all-or-nothing)       |
+| Update / delete a change             | `kestrel abstractions changes update <abs-id> <change-id> --payload @new.json` / `delete <abs-id> <change-id>` |
 | Abandon an abstraction               | `kestrel abstractions abandon <abs-id>`                                                                  |
 
-## Decision Trees
+## Authoring decision tree
 
-### Browsing existing data
-
-```
-Need to find something?
-├── Know the property/lease/expense ID?
-│   └── kestrel <resource> show <id> --agent
-├── Listing by parent?
-│   └── kestrel properties <leases|expenses|documents|key-dates> <prop-id> --agent
-│   └── kestrel leases <expenses|documents|key-dates|component-areas|securities|clauses> <lease-id> --agent
-├── Deep in dates dependency graph?
-│   └── kestrel properties date-entries <prop-id> --agent
-├── Looking for a payment or increase chain?
-│   └── kestrel expenses payments <expense-id> --agent
-│   └── kestrel expenses increases <expense-id> --agent
-└── Need a document?
-    ├── Metadata: kestrel documents show <id> --agent
-    ├── Read content / find values to cite:
-    │   └── kestrel documents blocks <id> --search "..." --agent   (preferred — block-anchored)
-    │   └── kestrel documents blocks <id> --type heading --agent   (structural navigation)
-    └── File transfer only (compliance/forwarding): kestrel documents download <id> -o /tmp/
-```
+For read-only browsing of properties/leases/expenses, use `kestrel commands --json`
+or `kestrel <resource> --help --agent` to discover the shape — the read surface is
+uniform (list / show / nested collections by parent).
 
 ### Authoring an abstraction
 
@@ -274,7 +264,7 @@ Want to change lease data?
 │   └── kestrel abstractions add-doc <abs-id> lease.pdf --wait-parse
 │   (Parses run on attach; --wait-parse blocks until complete.)
 ├── 4. Walk the block graph to find evidence
-│   └── kestrel documents blocks <doc-id> --search "phrase" --agent   (trigram, searches cells too)
+│   └── kestrel documents search <doc-id> "phrase" --agent   (trigram, searches cells too)
 │   └── kestrel documents blocks <doc-id> --type heading --agent      (navigate by structure)
 │   └── kestrel documents blocks <doc-id> --page 3 --agent            (page-scoped)
 │   └── kestrel documents block <block-id> --agent                    (confirm text + bbox)
@@ -312,10 +302,10 @@ ABS=$(kestrel abstractions create --template-id 3 --kind greenfield --agent | jq
 DOC=$(kestrel abstractions add-doc "$ABS" lease.pdf --wait-parse --agent | jq -r '.document_id')
 
 # 5. Find evidence fast — trigram search beats paging by a mile.
-kestrel documents blocks "$DOC" --search "commencement" --agent
+kestrel documents search "$DOC" "commencement" --agent
 # → [{id: 4240, text: "…commencement date shall be January 1, 2026…", reading_order: 42}]
 
-kestrel documents blocks "$DOC" --search "base rent" --type table --agent
+kestrel documents search "$DOC" "base rent" --type table --agent
 # → table block whose cells match; inspect metadata.cells[] to pick the cell
 
 # 6. Or walk by structure if search is too loose.
@@ -342,30 +332,32 @@ kestrel abstractions changes create "$ABS" \
   --payload '{"name":"Ground Floor","start_date":"2026-01-01","end_date":"2030-12-31"}' \
   --cite-block 4240:chars=14-72 --agent
 
-# Sub-object — mint one UUID, reuse it for every field in this instance.
-EXPENSE_GROUP=$(uuidgen)
+# Sub-object — mint one UUID server-side, reuse it for every field in the instance.
+EXPENSE_GROUP=$(kestrel abstractions changes new-group "$ABS" --target-type Expense)
 kestrel abstractions changes create "$ABS" \
   --action create --target-type Expense --sub-object-group "$EXPENSE_GROUP" \
-  --payload '{"name":"Base Rent"}' \
+  --target-field name --payload '{"name":"Base Rent"}' \
   --cite-block 4301:cell=2,1 --agent
 kestrel abstractions changes create "$ABS" \
   --action create --target-type Expense --sub-object-group "$EXPENSE_GROUP" \
-  --payload '{"amount":5000}' \
+  --target-field amount --payload '{"amount":5000}' \
   --cite-block 4301:cell=2,2 --agent
 kestrel abstractions changes create "$ABS" \
   --action create --target-type Expense --sub-object-group "$EXPENSE_GROUP" \
-  --payload '{"currency":"USD"}' \
+  --target-field currency --payload '{"currency":"USD"}' \
   --cite-block 4301:cell=2,3 --agent
 
-# KeyDate — same pattern.
-KEYDATE_GROUP=$(uuidgen)
+# KeyDate — same pattern. Note: for interactive single creates you can also
+# use --sub-object-group new to mint transparently on the first call, then
+# reuse the returned UUID (echoed via breadcrumb) for the siblings.
+KEYDATE_GROUP=$(kestrel abstractions changes new-group "$ABS" --target-type KeyDate)
 kestrel abstractions changes create "$ABS" \
   --action create --target-type KeyDate --sub-object-group "$KEYDATE_GROUP" \
-  --payload '{"name":"Expiration"}' \
+  --target-field name --payload '{"name":"Expiration"}' \
   --cite-block 4280 --agent
 kestrel abstractions changes create "$ABS" \
   --action create --target-type KeyDate --sub-object-group "$KEYDATE_GROUP" \
-  --payload '{"date":"2030-12-31"}' \
+  --target-field date --payload '{"date":"2030-12-31"}' \
   --cite-block 4280 --agent
 
 # 9. Audit what landed — list view includes source_links_preview per change.
@@ -388,17 +380,46 @@ fewer tokens than composing a large JSON file.
 
 ```bash
 # Example: loading an abstraction from a pre-translated CSV.
+# Every batch item is a single-field change. Sub-object instances need a
+# server-minted group UUID — mint one per instance BEFORE composing the
+# batch and embed the UUIDs in the relevant items.
+RENT_GROUP=$(kestrel abstractions changes new-group "$ABS" --target-type Expense)
+EXPIRY_GROUP=$(kestrel abstractions changes new-group "$ABS" --target-type KeyDate)
+
 cat > /tmp/batch.json <<EOF
 [
   {
-    "action": "create", "target_type": "Property",
-    "payload": {"name":"123 Main St","city":"Austin","country":"US"},
+    "action": "create", "target_type": "Property", "target_field": "name",
+    "payload": {"name":"123 Main St"},
     "source_links": [{"document_id": $DOC, "fragments":[{"document_block_id":4215}]}]
   },
   {
-    "action": "create", "target_type": "Lease",
-    "payload": {"name":"Ground Floor","start_date":"2026-01-01","end_date":"2030-12-31"},
+    "action": "create", "target_type": "Property", "target_field": "city",
+    "payload": {"city":"Austin"},
+    "source_links": [{"document_id": $DOC, "fragments":[{"document_block_id":4215}]}]
+  },
+  {
+    "action": "create", "target_type": "Lease", "target_field": "start_date",
+    "payload": {"start_date":"2026-01-01"},
     "source_links": [{"document_id": $DOC, "fragments":[{"document_block_id":4240,"char_start":14,"char_end":72}]}]
+  },
+  {
+    "action": "create", "target_type": "Expense", "target_field": "name",
+    "sub_object_group": "$RENT_GROUP",
+    "payload": {"name":"Base Rent"},
+    "source_links": [{"document_id": $DOC, "fragments":[{"document_block_id":4301,"table_cell_row":2,"table_cell_col":1}]}]
+  },
+  {
+    "action": "create", "target_type": "Expense", "target_field": "amount",
+    "sub_object_group": "$RENT_GROUP",
+    "payload": {"amount":5000},
+    "source_links": [{"document_id": $DOC, "fragments":[{"document_block_id":4301,"table_cell_row":2,"table_cell_col":2}]}]
+  },
+  {
+    "action": "create", "target_type": "KeyDate", "target_field": "name",
+    "sub_object_group": "$EXPIRY_GROUP",
+    "payload": {"name":"Expiration"},
+    "source_links": [{"document_id": $DOC, "fragments":[{"document_block_id":4280}]}]
   }
 ]
 EOF
@@ -463,17 +484,24 @@ a later reparse removed the anchor block).
 ### Schema response shape
 
 `kestrel abstractions schema <abs-id>` and `kestrel templates schema <tpl-id>`
-return `{data: {models: {<ModelName>: {...}, ...}}}`. Each model entry has:
+return `{data: {models: {<ModelName>: {...}, ...}}}`. Every model drafts the
+same way: one change per field, single-key payload, `target_field` explicit.
+The distinction between "root Property/Lease" and "sub-object" only matters
+for *grouping*, not payload shape:
 
-- `primary: true` — present only on top-level targets (`Property`, `Lease`).
-  Their `create` changes accept multi-key payloads. Absent ⇒ sub-object type,
-  one payload key per change. Use this flag to decide payload shape; never
-  hardcode model-name lists.
+- Root Property/Lease entries describe fields you write directly against the
+  abstraction's single Property/Lease. No `sub_object_group`.
+- Sub-object entries hang under their parent model's `sub_objects[]` list.
+  Every instance is identified by a server-minted `sub_object_group` UUID
+  shared across its field changes.
+
+Each model entry has:
 - `fields: [...]` — scalar fields expected on the model. One entry per
   requirement.
 - `sub_objects: [...]` — nested types that hang off this model. Each entry
-  describes a *type*; an agent creates an *instance* by POSTing changes that
-  share a freshly-minted `sub_object_group` UUID.
+  describes a *type*; create an *instance* by minting a group via
+  `changes new-group` (or `--sub-object-group new` on a streamed create)
+  and POSTing one change per field stamped with that UUID.
 
 Each `sub_objects[]` entry carries:
 - `kind: "sub_object"` — discriminator constant.
@@ -535,32 +563,6 @@ kestrel abstractions remove-doc 42 --document-id 87 --agent
 # cited_by_locked_change. Reject the change in the web UI first.
 ```
 
-## Resource Reference
-
-### Read-only
-
-| Resource            | Show                                           | Nested collections                                                              |
-|---------------------|------------------------------------------------|---------------------------------------------------------------------------------|
-| `me`                | `kestrel me`                                   | —                                                                               |
-| `field-configs`     | `kestrel field-configs list`                   | —                                                                               |
-| `properties`        | `kestrel properties show <id>`                 | `leases`, `expenses`, `documents`, `key-dates`, `date-entries`                  |
-| `leases`            | `kestrel leases show <id>`                     | `expenses`, `documents`, `key-dates`, `component-areas`, `securities`, `clauses`|
-| `expenses`          | `kestrel expenses show <id>`                   | `payments`, `increases`                                                         |
-| `lease-securities`  | `kestrel lease-securities show <id>`           | `increases`                                                                     |
-| `documents`         | `kestrel documents show <id>`                  | `download` (binary), `parse`, `pages`, `blocks`, `block <block-id>`             |
-
-### Write (abstraction-scoped)
-
-| Operation                         | Command                                                                   |
-|-----------------------------------|---------------------------------------------------------------------------|
-| Discover templates                | `kestrel templates list \| show \| schema`                                 |
-| Abstraction CRUD                  | `kestrel abstractions create \| show \| update \| abandon`                 |
-| Authoring schema                  | `kestrel abstractions schema <abs-id>`                                    |
-| Source docs (upload + attach)     | `kestrel abstractions add-doc <abs-id> <file>`                            |
-| Source docs (destroy)             | `kestrel abstractions remove-doc <abs-id> --document-id N`                |
-| Source docs (list)                | `kestrel abstractions sources <abs-id>`                                   |
-| Per-field changes                 | `kestrel abstractions changes create \| create-batch \| list \| show \| update \| delete` |
-
 ## Error Handling
 
 Structured errors in `--json` / `--agent` mode:
@@ -569,25 +571,26 @@ Structured errors in `--json` / `--agent` mode:
 {"ok": false, "error": "<template-id> required", "code": "usage", "hint": "kestrel abstractions create --template-id N --kind greenfield|brownfield"}
 ```
 
-Key error codes:
+Generic REST codes (`usage`, `validation`, `unauthorized`, `token_expired`,
+`api_disabled`, `forbidden`, `not_found`, `rate_limited`) carry self-evident
+meaning — `error` + `hint` on the envelope is usually enough. Rate limits:
+reads 200/30s burst, 2000/min; writes 500/min.
+
+Kestrel-specific codes worth knowing:
 
 | Code                      | Meaning                                                                          | Fix                                                               |
 |---------------------------|----------------------------------------------------------------------------------|-------------------------------------------------------------------|
-| `usage`                   | Missing required flag/arg                                                        | Read `hint` and `error` — `error` names the missing `<arg>`       |
-| `validation`              | Server rejected payload (422)                                                    | Inspect `errors` array                                            |
-| `unauthorized`            | No token or 401 from server                                                      | `kestrel login`                                                   |
-| `token_expired`           | Token past its expiry                                                            | `kestrel login` to regenerate                                     |
-| `api_disabled`            | Org has `api_access_enabled` off                                                 | Staff must enable in org settings                                 |
-| `forbidden`               | RBAC denied, or channel-lock (web_ui-sourced change)                             | Check role permissions, or edit via web UI                        |
-| `not_found`               | Record missing or not visible to your RBAC scope                                 | Verify ID and your permissions                                    |
-| `rate_limited`            | 429 — exceeded per-token burst or per-minute caps                                | Wait + retry. Reads: 200/30s burst, 2000/min. Writes: 500/min.   |
-| `cited_by_locked_change`  | Attempting to `remove-doc` a doc cited by an approved or applied change          | Reject the change in the web UI first                             |
-| `payload_extra_keys`      | Payload carries more than one key on a single-field change                       | One scalar field per change; infer single-vs-multi from schema's `primary` flag |
-| `channel_locked`          | POSTing an api change on a pending slot held by web_ui                           | Reject the web_ui change in the web UI first, then retry the POST |
-| `parse_missing`           | `documents parse <id>` — the document has never been parsed                      | Attach it to an abstraction via `add-doc` to trigger a parse      |
-| `parse_failed`            | `documents parse --wait` — parse terminated in `failed`                          | Inspect `error_message`; fall back to coord-mode citations        |
-| `parse_timeout`           | `documents parse --wait` — deadline elapsed before terminal status               | Retry with `--timeout` raised, or poll manually later             |
-| `batch_rejected`          | `changes create-batch` — any per-item failure rolls the whole batch back         | Inspect `errors[]` — each entry has `index` (input position) + messages |
+| `cited_by_locked_change`  | `remove-doc` on a doc cited by an approved/applied change                        | Reject the change in the web UI first                             |
+| `payload_extra_keys`      | Payload has more than one key; must be exactly `{target_field: value}`           | One key per change — always                                       |
+| `target_field_required`   | Create/update submitted without an explicit `target_field`                       | Set `--target-field` or use a single-key payload the CLI can lift |
+| `channel_locked`          | POSTing an api change on a pending slot held by web_ui                           | Reject the web_ui change in the web UI first, then retry          |
+| `sub_object_group_not_allowed`          | Property/Lease create carried a `sub_object_group`                  | Drop `--sub-object-group`; root creates don't carry a group       |
+| `sub_object_group_required`             | Sub-object create missing `sub_object_group`                        | Mint via `changes new-group` or pass `--sub-object-group new`     |
+| `sub_object_group_unknown`              | UUID wasn't minted on this abstraction (client UUIDs rejected)      | Re-mint with `changes new-group`                                  |
+| `sub_object_group_target_type_mismatch` | UUID was minted for a different target_type                         | Mint a fresh group for the current target_type                    |
+| `parse_missing`           | Document has never been parsed                                                   | Attach to an abstraction via `add-doc` to trigger                 |
+| `parse_failed` / `parse_timeout` | Parse wait reached terminal failure / deadline                            | Inspect `error_message`; fall back to coord-mode citations        |
+| `batch_rejected`          | `changes create-batch` — any per-item failure rolls the whole batch back         | Inspect `errors[]` — each entry has `index` + `code` + messages   |
 
 ## Exit Codes
 
@@ -604,23 +607,10 @@ Key error codes:
 
 ## Configuration
 
-```
-~/.config/kestrel/config.json    # token, base_url; created by `kestrel login`
-```
-
-Environment overrides:
-
-- `KESTREL_TOKEN` — bearer token
-- `KESTREL_BASE_URL` — `https://kestrelportfolio.com/api/v1` by default
-
-Flag `--base-url` overrides both for a single command.
-
-Check current identity and environment:
-
-```bash
-kestrel me --agent                    # who am I, what org?
-kestrel doctor --json                 # install + auth + connectivity health
-```
+`KESTREL_TOKEN` and `KESTREL_BASE_URL` env vars override the saved config at
+`~/.config/kestrel/config.json`. Flag `--base-url` wins for a single call.
+Verify with `kestrel me --agent` or `kestrel doctor --json`. Full precedence
+and per-environment setup in `docs/environments.md`.
 
 ## Learn More
 

@@ -297,13 +297,15 @@ Examples:
 			change["revised_from_id"] = changesCreateRevisedFromID
 		}
 
-		// sub_object_group: "new" → mint a UUID, otherwise pass through literal.
+		// sub_object_group: "new" → mint server-side, otherwise pass through.
+		// Server-issued UUIDs are the only accepted form; client-generated
+		// values are rejected with sub_object_group_unknown.
 		mintedUUID := ""
 		if changesCreateSubObjectGroup != "" {
 			if changesCreateSubObjectGroup == "new" {
-				u, err := newUUIDv4()
+				u, err := mintSubObjectGroup(args[0], changesCreateTargetType)
 				if err != nil {
-					return fmt.Errorf("minting UUID: %w", err)
+					return err
 				}
 				mintedUUID = u
 				change["sub_object_group"] = u
@@ -607,9 +609,19 @@ func renderBatchFailure(status int, body []byte) error {
 			seenCodes[item.Code] = true
 			switch item.Code {
 			case "payload_extra_keys":
-				fmt.Fprintln(os.Stderr, "  hint: one scalar field per change, one payload key per change. Multi-key payloads are only legal on primary-target (Property/Lease) creates.")
+				fmt.Fprintln(os.Stderr, "  hint: one payload key per change, always. Split multi-key items into separate batch entries.")
+			case "target_field_required":
+				fmt.Fprintln(os.Stderr, "  hint: every item needs target_field explicitly set.")
 			case "channel_locked":
 				fmt.Fprintln(os.Stderr, "  hint: a web_ui change already holds the pending slot for at least one of these fields. Reject it in the web UI before retrying.")
+			case "sub_object_group_not_allowed":
+				fmt.Fprintln(os.Stderr, "  hint: Property/Lease creates must not carry sub_object_group. Remove it from the offending items.")
+			case "sub_object_group_required":
+				fmt.Fprintln(os.Stderr, "  hint: sub-object creates need a server-minted group. Mint via `kestrel abstractions changes new-group <abs-id> --target-type <T>` and embed the UUID in each batch item.")
+			case "sub_object_group_unknown":
+				fmt.Fprintln(os.Stderr, "  hint: at least one sub_object_group UUID wasn't minted on this abstraction. Re-mint with `changes new-group` and update the batch JSON.")
+			case "sub_object_group_target_type_mismatch":
+				fmt.Fprintln(os.Stderr, "  hint: a group UUID in the batch was minted for a different target_type than the change it's stamped on. Mint one group per target_type and per instance.")
 			}
 		}
 	}
@@ -634,6 +646,81 @@ func renderBatchFailure(status int, body []byte) error {
 		fmt.Println(string(body))
 	}
 	return &api.APIError{StatusCode: status, Message: msg, Code: code, Errors: flat}
+}
+
+var newGroupTargetType string
+
+var abstractionChangesNewGroupCmd = &cobra.Command{
+	Use:   "new-group <abstraction-id>",
+	Short: "Mint a server-issued sub_object_group UUID for a new sub-object instance",
+	Long: `Creates a new sub_object_group on the abstraction and returns its UUID.
+Every sub-object instance (a new KeyDate, Expense, LeaseClause, etc.) is
+identified by a group UUID that must be minted server-side before any field
+changes reference it. Client-generated UUIDs are rejected.
+
+For typical single-change drafting, 'kestrel abstractions changes create
+--sub-object-group new' mints transparently under the hood. Use this
+command when composing a batch file or any flow where you need the UUID
+up-front.
+
+TTY output: prints the UUID alone on stdout (easy to capture with $(...)).
+Structured output: full {sub_object_group, target_type} envelope.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := requireLogin(); err != nil {
+			return err
+		}
+		if newGroupTargetType == "" {
+			return &UsageError{
+				Arg:   "target-type",
+				Usage: "kestrel abstractions changes new-group <abs-id> --target-type KeyDate|Expense|LeaseClause|...",
+			}
+		}
+		uuid, err := mintSubObjectGroup(args[0], newGroupTargetType)
+		if err != nil {
+			return err
+		}
+		if !printer.IsStructured() {
+			// Bare UUID on stdout so shell users can capture it with $(...).
+			fmt.Println(uuid)
+			printer.Success(fmt.Sprintf("Minted sub_object_group %s for %s on abstraction #%s", uuid, newGroupTargetType, args[0]))
+		}
+		// Build a minimal envelope for --json/--agent consumers — the
+		// server's /create_sub_object_group response shape passes straight
+		// through without transformation.
+		env := map[string]any{
+			"ok": true,
+			"data": map[string]string{
+				"sub_object_group": uuid,
+				"target_type":      newGroupTargetType,
+			},
+		}
+		printer.FinishEnvelope(env)
+		return nil
+	},
+}
+
+// mintSubObjectGroup calls the server's create_sub_object_group endpoint and
+// returns the minted UUID. Shared by 'changes new-group' and by the
+// transparent '--sub-object-group new' path on 'changes create'.
+func mintSubObjectGroup(absID, targetType string) (string, error) {
+	env, err := client.Post(
+		"/abstractions/"+absID+"/changes/create_sub_object_group",
+		map[string]any{"target_type": targetType},
+	)
+	if err != nil {
+		return "", err
+	}
+	var payload struct {
+		SubObjectGroup string `json:"sub_object_group"`
+	}
+	if err := json.Unmarshal(env.Data, &payload); err != nil {
+		return "", fmt.Errorf("decoding mint response: %w", err)
+	}
+	if payload.SubObjectGroup == "" {
+		return "", fmt.Errorf("mint response missing sub_object_group")
+	}
+	return payload.SubObjectGroup, nil
 }
 
 var abstractionChangesDeleteCmd = &cobra.Command{
@@ -809,9 +896,19 @@ func hintChangeCreateError(err error) {
 	}
 	switch apiErr.Code {
 	case "payload_extra_keys":
-		printer.Errorf("payload rejected — one scalar field per change, one payload key per change. Multi-key payloads are only legal on primary-target (Property/Lease) creates.")
+		printer.Errorf("payload rejected — one payload key per change, always. The key must match target_field exactly.")
+	case "target_field_required":
+		printer.Errorf("target_field missing — every create/update must specify --target-field (or let the CLI pass it via --payload key).")
 	case "channel_locked":
 		printer.Errorf("channel_locked — a web_ui change already holds this field's pending slot. Reject it in the web UI (or have the drafter cancel) before POSTing an api replacement.")
+	case "sub_object_group_not_allowed":
+		printer.Errorf("sub_object_group not allowed — Property/Lease creates don't carry a group. Drop --sub-object-group from this change.")
+	case "sub_object_group_required":
+		printer.Errorf("sub_object_group required — sub-object creates need a server-minted group. Pass --sub-object-group new (auto-mints), or `kestrel abstractions changes new-group <abs-id> --target-type <T>` to mint explicitly.")
+	case "sub_object_group_unknown":
+		printer.Errorf("sub_object_group_unknown — this UUID wasn't minted on this abstraction. Client-generated UUIDs are rejected; use --sub-object-group new to mint one.")
+	case "sub_object_group_target_type_mismatch":
+		printer.Errorf("sub_object_group_target_type_mismatch — this group was minted for a different target_type. Mint a fresh group for the current target_type (--sub-object-group new).")
 	}
 }
 
@@ -873,10 +970,13 @@ func init() {
 
 	abstractionChangesBatchCmd.Flags().StringVar(&batchCreateFileInput, "file", "", "Batch payload as JSON array, @file, or - for stdin (required)")
 
+	abstractionChangesNewGroupCmd.Flags().StringVar(&newGroupTargetType, "target-type", "", "Sub-object target_type (KeyDate, Expense, LeaseClause, …) (required)")
+
 	abstractionChangesCmd.AddCommand(abstractionChangesListCmd)
 	abstractionChangesCmd.AddCommand(abstractionChangesShowCmd)
 	abstractionChangesCmd.AddCommand(abstractionChangesCreateCmd)
 	abstractionChangesCmd.AddCommand(abstractionChangesBatchCmd)
+	abstractionChangesCmd.AddCommand(abstractionChangesNewGroupCmd)
 	abstractionChangesCmd.AddCommand(abstractionChangesUpdateCmd)
 	abstractionChangesCmd.AddCommand(abstractionChangesDeleteCmd)
 	abstractionsCmd.AddCommand(abstractionChangesCmd)

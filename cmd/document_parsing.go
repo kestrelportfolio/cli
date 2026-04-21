@@ -192,18 +192,27 @@ const blocksSearchMinLen = 4
 var documentsBlocksCmd = &cobra.Command{
 	Use:   "blocks <doc-id>",
 	Short: "List parsed blocks for a document version",
-	Long: `Walks the reading-ordered block graph produced by the parse. Default
-returns up to 500 blocks starting from the top.
+	Long: `STRUCTURAL navigation of a parsed document's block graph.
+
+If you're looking for a specific value — a date, a rent amount, a party
+name, an address — use 'kestrel documents search <doc-id> <query>' instead.
+Trigram search is typically 5–10× cheaper than walking structure.
+
+This command is the right tool when you want to browse by structure: walk
+through headings, scope to a page, examine blocks around one you already
+found, or page through the full document. Default returns up to 500 blocks
+starting at the top.
 
 Filters:
   --page N              only blocks on page N (1-indexed)
   --type heading|…      filter by block_type
-  --search <substring>  case-insensitive match across block text and table
-                        cell text (trigram-indexed on the server). Min 4 chars.
-  --since-order N       cursor: return blocks with reading_order > N
   --near <block-id>     neighborhood: blocks within ±window of this one
   --window K            reading-order distance around --near (default 5)
+  --since-order N       cursor: return blocks with reading_order > N
   --limit N             cap records (default 500, max 1000)
+  --search <substring>  text-match filter (same backend as the search
+                        command; use this variant only to combine with
+                        structural filters in one call)
 
 Cursor pagination: use the last returned block's reading_order as
 --since-order on the next call. The JSON envelope's meta.next_since_order
@@ -225,11 +234,6 @@ fragment in --source-links.`,
 				Arg:   "search",
 				Usage: fmt.Sprintf("--search requires at least %d characters (pg_trgm indexes 3-char n-grams; shorter queries skip the index)", blocksSearchMinLen),
 			}
-		}
-
-		versionNumber, err := resolveVersionNumber(args[0], blocksVersion)
-		if err != nil {
-			return err
 		}
 
 		params := map[string]string{}
@@ -254,44 +258,112 @@ fragment in --source-links.`,
 		if blocksLimit > 0 {
 			params["limit"] = strconv.Itoa(blocksLimit)
 		}
+		return runBlocksRequest(args[0], blocksVersion, params)
+	},
+}
 
-		path := fmt.Sprintf("/documents/%s/versions/%d/blocks", args[0], versionNumber)
-		raw, err := client.GetRaw(path, params)
-		if err != nil {
+// runBlocksRequest is the shared code path for 'documents blocks' and
+// 'documents search'. Both hit the same /blocks endpoint; only the argument
+// convention differs (blocks is filter-driven, search takes the query as a
+// required positional).
+func runBlocksRequest(docID string, version int, params map[string]string) error {
+	versionNumber, err := resolveVersionNumber(docID, version)
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/documents/%s/versions/%d/blocks", docID, versionNumber)
+	raw, err := client.GetRaw(path, params)
+	if err != nil {
+		return err
+	}
+	if !printer.IsStructured() {
+		var resp struct {
+			Data []documentBlock `json:"data"`
+			Meta struct {
+				Count          int  `json:"count"`
+				Limit          int  `json:"limit"`
+				NextSinceOrder *int `json:"next_since_order"`
+			} `json:"meta"`
+		}
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return fmt.Errorf("parsing response: %w", err)
+		}
+		headers := []string{"ID", "Order", "Page", "Type", "H-Lvl", "Chars", "Text preview"}
+		rows := make([][]string, len(resp.Data))
+		for i, b := range resp.Data {
+			rows[i] = []string{
+				strconv.Itoa(b.ID),
+				strconv.Itoa(b.ReadingOrder),
+				derefInt(b.PageNumber),
+				b.BlockType,
+				derefInt(b.HeadingLevel),
+				strconv.Itoa(b.CharLength),
+				truncate(b.Text, 60),
+			}
+		}
+		printer.Table(headers, rows)
+		if resp.Meta.NextSinceOrder != nil && resp.Meta.Count >= resp.Meta.Limit {
+			printer.Breadcrumb(fmt.Sprintf("Next page: --since-order %d", *resp.Meta.NextSinceOrder))
+		}
+		if len(resp.Data) == 0 {
+			printer.Breadcrumb(fmt.Sprintf("No blocks matched. If you're looking for a value, try: kestrel documents search %s \"<phrase>\"", docID))
+		}
+	}
+	printer.FinishRaw(raw)
+	return nil
+}
+
+var (
+	searchVersion int
+	searchPage    int
+	searchType    string
+	searchLimit   int
+)
+
+var documentsSearchCmd = &cobra.Command{
+	Use:   "search <doc-id> <query>",
+	Short: "Find blocks by text content (the preferred way to locate values)",
+	Long: `Trigram-indexed text search across block prose AND table cell text. The
+primary way to locate a specific value (date, rent, party name, address,
+expiration clause) in a parsed document — typically 5–10× cheaper than
+walking the structure block-by-block.
+
+Query must be at least 4 characters. Typos score partial matches, so
+"commencment" will still hit "commencement". Returns results in reading
+order (not similarity-ranked).
+
+Scope with --page or --type when you already know the region
+(e.g. --type table for rent schedules). To walk structurally when you
+don't know what you're looking for, use 'kestrel documents blocks'
+with --type, --page, --near, or --since-order.
+
+Examples:
+  kestrel documents search 42 "commencement"
+  kestrel documents search 42 "base rent" --type table --agent
+  kestrel documents search 42 "guarantor" --page 3`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := requireLogin(); err != nil {
 			return err
 		}
-		if !printer.IsStructured() {
-			var resp struct {
-				Data []documentBlock `json:"data"`
-				Meta struct {
-					Count          int  `json:"count"`
-					Limit          int  `json:"limit"`
-					NextSinceOrder *int `json:"next_since_order"`
-				} `json:"meta"`
-			}
-			if err := json.Unmarshal(raw, &resp); err != nil {
-				return fmt.Errorf("parsing response: %w", err)
-			}
-			headers := []string{"ID", "Order", "Page", "Type", "H-Lvl", "Chars", "Text preview"}
-			rows := make([][]string, len(resp.Data))
-			for i, b := range resp.Data {
-				rows[i] = []string{
-					strconv.Itoa(b.ID),
-					strconv.Itoa(b.ReadingOrder),
-					derefInt(b.PageNumber),
-					b.BlockType,
-					derefInt(b.HeadingLevel),
-					strconv.Itoa(b.CharLength),
-					truncate(b.Text, 60),
-				}
-			}
-			printer.Table(headers, rows)
-			if resp.Meta.NextSinceOrder != nil && resp.Meta.Count >= resp.Meta.Limit {
-				printer.Breadcrumb(fmt.Sprintf("Next page: --since-order %d", *resp.Meta.NextSinceOrder))
+		docID, query := args[0], args[1]
+		if len(query) < blocksSearchMinLen {
+			return &UsageError{
+				Arg:   "query",
+				Usage: fmt.Sprintf("search query must be at least %d characters (pg_trgm indexes 3-char n-grams; shorter queries skip the index)", blocksSearchMinLen),
 			}
 		}
-		printer.FinishRaw(raw)
-		return nil
+		params := map[string]string{"q": query}
+		if searchPage > 0 {
+			params["page"] = strconv.Itoa(searchPage)
+		}
+		if searchType != "" {
+			params["type"] = searchType
+		}
+		if searchLimit > 0 {
+			params["limit"] = strconv.Itoa(searchLimit)
+		}
+		return runBlocksRequest(docID, searchVersion, params)
 	},
 }
 
@@ -524,7 +596,12 @@ func init() {
 	documentsBlocksCmd.Flags().IntVar(&blocksVersion, "version", 0, "Specific version number (default: latest)")
 	documentsBlocksCmd.Flags().IntVar(&blocksPage, "page", 0, "Only blocks on this page (1-indexed)")
 	documentsBlocksCmd.Flags().StringVar(&blocksType, "type", "", "Filter by block_type (heading|paragraph|list_item|table|figure|caption|code|formula|footnote|page_header|page_footer)")
-	documentsBlocksCmd.Flags().StringVar(&blocksSearch, "search", "", "Case-insensitive text search across block text and table cell text (min 4 chars)")
+	documentsBlocksCmd.Flags().StringVar(&blocksSearch, "search", "", "Case-insensitive text search (min 4 chars). For pure search, prefer `documents search <doc-id> <query>`")
+
+	documentsSearchCmd.Flags().IntVar(&searchVersion, "version", 0, "Specific version number (default: latest)")
+	documentsSearchCmd.Flags().IntVar(&searchPage, "page", 0, "Only match blocks on this page (1-indexed)")
+	documentsSearchCmd.Flags().StringVar(&searchType, "type", "", "Only match blocks of this block_type (heading|paragraph|list_item|table|figure|caption|code|formula|footnote|page_header|page_footer)")
+	documentsSearchCmd.Flags().IntVar(&searchLimit, "limit", 0, "Max matches per response (default 500, max 1000)")
 	documentsBlocksCmd.Flags().IntVar(&blocksSinceOrder, "since-order", 0, "Return blocks with reading_order > N (cursor pagination)")
 	documentsBlocksCmd.Flags().IntVar(&blocksNear, "near", 0, "Anchor block id for a neighborhood fetch")
 	documentsBlocksCmd.Flags().IntVar(&blocksWindow, "window", 0, "Reading-order distance around --near (default 5)")
@@ -532,6 +609,7 @@ func init() {
 
 	documentsCmd.AddCommand(documentsParseCmd)
 	documentsCmd.AddCommand(documentsPagesCmd)
+	documentsCmd.AddCommand(documentsSearchCmd)
 	documentsCmd.AddCommand(documentsBlocksCmd)
 	documentsCmd.AddCommand(documentsBlockCmd)
 }

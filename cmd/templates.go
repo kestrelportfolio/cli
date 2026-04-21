@@ -244,6 +244,7 @@ func renderAbstractionSchema(raw []byte) error {
 				}
 			}
 			printer.Table(headers, rows)
+			renderGuidance(m.Fields, "")
 		}
 		for _, so := range m.SubObjects {
 			label := "  sub-object"
@@ -275,9 +276,39 @@ func renderAbstractionSchema(raw []byte) error {
 				}
 			}
 			printer.Table(headers, rows)
+			renderGuidance(so.Fields, "  ")
 		}
 	}
 	return nil
+}
+
+// renderGuidance prints the subset of fields that carry non-empty guidance
+// prose, beneath the field table. Guidance is where templates encode house
+// rules ("if silent, write 'Lease is silent for this clause'", etc.) — an
+// agent that skips reading it will miss the intended answer for edge cases.
+// indent is a leading string applied to each line; sub-object field tables
+// use "  " so the guidance nests under the right group.
+func renderGuidance(fields []schemaFieldSpec, indent string) {
+	var notes []schemaFieldSpec
+	for _, f := range fields {
+		if f.Guidance != nil && strings.TrimSpace(*f.Guidance) != "" {
+			notes = append(notes, f)
+		}
+	}
+	if len(notes) == 0 {
+		return
+	}
+	fmt.Printf("%sGuidance\n%s%s\n", indent, indent, strings.Repeat("─", 8))
+	// Align field names so guidance prose starts at the same column.
+	maxName := 0
+	for _, f := range notes {
+		if len(f.FieldName) > maxName {
+			maxName = len(f.FieldName)
+		}
+	}
+	for _, f := range notes {
+		fmt.Printf("%s  %-*s  %s\n", indent, maxName, f.FieldName, strings.TrimSpace(*f.Guidance))
+	}
 }
 
 // previewJSON renders a json.RawMessage as a single-line string, or "" for null/empty.
