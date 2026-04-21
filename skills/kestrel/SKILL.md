@@ -65,17 +65,36 @@ web UI before it goes live.
    (breadcrumbs, meta), `--quiet`/no flag for human display.
 6. **Check auth before anything else.** Exit code 3 means "no token or
    expired". Run `kestrel login` to fix.
-7. **Dedup is automatic.** Re-POSTing `changes create` with the same
+7. **Dedup is automatic on pending api-sourced changes.** Re-POSTing
+   `changes create` with the same
    `(action, target_type, target_field, sub_object_group)` tuple updates the
-   existing pending change and returns 200 (not 201). Use this for idempotent
-   retries; don't check for existence first.
+   existing pending api-sourced change and returns 200 (not 201). Payload is
+   replaced; `source_links` is replaced when provided (omit to leave existing
+   links alone); `revised_from_id` is write-once and not recomputed. Use this
+   for idempotent retries; don't check for existence first. **Rejected,
+   approved, and applied changes are terminal** — they're part of the
+   revised_from chain and the audit trail, so PATCH/DELETE refuse with 422.
+   To change a rejected value, POST a new create; `revised_from_id`
+   auto-links to the rejected predecessor.
 8. **Sub-object fields group via UUID.** When creating a new KeyDate, Expense,
    or other sub-object, every field change for that instance shares a
    `sub_object_group` UUID. Mint one with `--sub-object-group new` on the
    first change; reuse the UUID in breadcrumbs for sibling fields.
-9. **Channel-lock: API-authored changes can only be edited via the API.**
-   Changes drafted in the web UI (source: "web_ui") are read-only from the
-   CLI. 403 on update/delete means this.
+9. **Channel-lock: one pending non-default change per tuple, per channel.**
+   Every field has a pending slot on `(action, target_type, target_field,
+   sub_object_group)`. At most one `pending` non-default change can occupy
+   it at a time; the source of that change identifies which channel holds
+   it. Consequences:
+   - Editing (PATCH/DELETE): api changes can only be edited via the API;
+     web_ui changes are read-only to the CLI (403).
+   - Drafting (POST): api POSTs against a slot already held by a pending
+     web_ui change return 422 `channel_locked` naming the conflict id —
+     reject the web_ui change in the web UI first, then POST.
+   - The one exception: `default`-sourced scaffolds transparently supersede
+     on POST (matching payload → no-op, differing payload → default
+     rejected + new change linked via `revised_from_id`). Conditional
+     sub-object scaffolds (e.g. pre-filled "Lease Expiration" KeyDate) are
+     `default`-sourced, so agents can overwrite them cleanly.
 10. **Stream single creates as you find fields; batch only for bulk imports.**
     When reading a document and extracting fields one at a time, POST each
     change the moment you've confirmed the citation — don't hoard them into
@@ -90,12 +109,16 @@ web UI before it goes live.
     cell text. Queries under 4 chars are rejected client-side — trigrams
     need at least 3 chars to narrow, 4 is the ergonomic floor. Typos score
     partial matches, so spelling need not be exact.
-12. **One source_link entry per document_id.** The server rejects multiple
-    entries citing the same document in one change ("Linkable is already
-    linked"). The CLI auto-merges duplicate `document_id` entries (with
-    fragments concatenated) when you pass `--source-links` or batch JSON,
-    and breadcrumbs when it does. Still best to write one entry per doc
-    up front — the merge is a safety net, not a blessing to be sloppy.
+12. **One payload key per change, except on primary targets.** The server
+    rejects multi-key payloads on single-field changes with 422
+    `payload_extra_keys`. The structural rule: a change is single-key if it
+    has `target_field` set, or is an `update`, or is a `create` on a
+    non-primary target. Primary targets (Property, Lease) are the only
+    models that accept multi-field `create` payloads. Infer from the
+    `/schema` response rather than hardcoding model names: any model with
+    `primary: true` takes multi-key creates; everything else is one key per
+    change. Stream one change per field using `sub_object_group` to glue
+    siblings into one sub-object instance.
 13. **Don't download the PDF to read it yourself.** When a document has a
     complete parse, `documents blocks --search "q"` or `--type heading` is
     faster, produces block-anchored citations the abstraction-review flow
@@ -437,6 +460,51 @@ Read responses echo back `document_block_id`, `cited_text`, `needs_review`
 (true for agent-emitted block-refs awaiting review), and `stale` (true when
 a later reparse removed the anchor block).
 
+### Schema response shape
+
+`kestrel abstractions schema <abs-id>` and `kestrel templates schema <tpl-id>`
+return `{data: {models: {<ModelName>: {...}, ...}}}`. Each model entry has:
+
+- `primary: true` — present only on top-level targets (`Property`, `Lease`).
+  Their `create` changes accept multi-key payloads. Absent ⇒ sub-object type,
+  one payload key per change. Use this flag to decide payload shape; never
+  hardcode model-name lists.
+- `fields: [...]` — scalar fields expected on the model. One entry per
+  requirement.
+- `sub_objects: [...]` — nested types that hang off this model. Each entry
+  describes a *type*; an agent creates an *instance* by POSTing changes that
+  share a freshly-minted `sub_object_group` UUID.
+
+Each `sub_objects[]` entry carries:
+- `kind: "sub_object"` — discriminator constant.
+- `required: true|false` — whether this sub-object counts for go-live.
+  `false` means the abstraction can go live with zero instances.
+- `min_count: N` — number of instances required *when counted*. Always ≥ 1.
+  `required: false, min_count: 1` means "agents may draft one, but go-live
+  doesn't require it" — `required` gates go-live, `min_count` doesn't.
+- `condition: {field: value, ...}` — optional jsonb filter. When present,
+  instances must satisfy it (e.g. `{name: "Lease Expiration"}` means this
+  is specifically the expiration KeyDate). Conditional sub-objects are
+  pre-scaffolded as `default`-sourced changes that agents can supersede
+  transparently via POST.
+- `fields: [...]` — field shape for one instance; same as the top-level
+  `fields` array.
+
+Each `fields[]` entry carries:
+- `field_name` — use as `target_field` (or omit and let the server infer
+  from a single-key payload).
+- `type` — one of `string`, `boolean`, `date`, `decimal`, `area`.
+- `caption` — org-customized human-readable label.
+- `required: true|false` — counts for go-live. Not a POST-time constraint.
+- `options: [{value, label}, ...]` — present when the field has a
+  constrained list (string with dropdown, or boolean). **Authoritative** —
+  don't cross-reference `/field-configs`, the schema is the source of
+  truth. Absent ⇒ any value of the declared type is fine.
+- `default_value` — pre-resolved from the template → FieldConfig → model-
+  default cascade. The abstraction already has a `default`-sourced change
+  carrying this; echoing it back POST as a no-op via supersede.
+- `guidance` — optional prose from the template author for the drafter.
+
 ### Poll parse status manually
 
 When you skipped `--wait-parse` on upload (e.g. batch-attaching several docs
@@ -514,6 +582,8 @@ Key error codes:
 | `not_found`               | Record missing or not visible to your RBAC scope                                 | Verify ID and your permissions                                    |
 | `rate_limited`            | 429 — exceeded per-token burst or per-minute caps                                | Wait + retry. Reads: 200/30s burst, 2000/min. Writes: 500/min.   |
 | `cited_by_locked_change`  | Attempting to `remove-doc` a doc cited by an approved or applied change          | Reject the change in the web UI first                             |
+| `payload_extra_keys`      | Payload carries more than one key on a single-field change                       | One scalar field per change; infer single-vs-multi from schema's `primary` flag |
+| `channel_locked`          | POSTing an api change on a pending slot held by web_ui                           | Reject the web_ui change in the web UI first, then retry the POST |
 | `parse_missing`           | `documents parse <id>` — the document has never been parsed                      | Attach it to an abstraction via `add-doc` to trigger a parse      |
 | `parse_failed`            | `documents parse --wait` — parse terminated in `failed`                          | Inspect `error_message`; fall back to coord-mode citations        |
 | `parse_timeout`           | `documents parse --wait` — deadline elapsed before terminal status               | Retry with `--timeout` raised, or poll manually later             |

@@ -66,9 +66,19 @@ func commandCatalog() []CommandCategory {
 			Category: "Agent Setup",
 			Commands: []CommandInfo{
 				{
+					Name:        "setup",
+					Usage:       "kestrel setup",
+					Description: "Interactive wizard: auth → Claude plugin → shell completions",
+				},
+				{
 					Name:        "setup claude",
 					Usage:       "kestrel setup claude",
-					Description: "Install the Kestrel plugin for Claude Code",
+					Description: "Install the Kestrel plugin for Claude Code (non-interactive)",
+				},
+				{
+					Name:        "setup completions",
+					Usage:       "kestrel setup completions",
+					Description: "Append a completion source line to your shell's rc file",
 				},
 			},
 		},
@@ -365,13 +375,13 @@ func commandCatalog() []CommandCategory {
 				{
 					Name:        "abstractions changes update",
 					Usage:       "kestrel abstractions changes update <abstraction-id> <change-id> [--payload ...] [--source-links ...]",
-					Description: "Update a change's payload or source links (API-sourced pending/rejected only)",
+					Description: "Update a change's payload or source links (API-sourced pending only; rejected is terminal)",
 					Flags:       []string{"--payload", "--source-links"},
 				},
 				{
 					Name:        "abstractions changes delete",
 					Usage:       "kestrel abstractions changes delete <abstraction-id> <change-id>",
-					Description: "Delete a staged change (API-sourced pending/rejected only)",
+					Description: "Delete a staged change (API-sourced pending only; rejected is terminal)",
 				},
 			},
 		},

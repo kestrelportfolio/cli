@@ -43,10 +43,15 @@ type schemaFieldSpec struct {
 }
 
 // schemaSubObject represents a sub-object requirement group.
+// Condition is a jsonb object (e.g. {"name": "Lease Expiration"}), not a
+// string. Required is separate from min_count: required=false with min_count=1
+// means "agents may draft one, but the abstraction is free to go live with
+// zero"; required=true is what gates go-live.
 type schemaSubObject struct {
 	Kind      string            `json:"kind"`
+	Required  bool              `json:"required"`
 	MinCount  *int              `json:"min_count"`
-	Condition *string           `json:"condition"`
+	Condition json.RawMessage   `json:"condition"`
 	Fields    []schemaFieldSpec `json:"fields"`
 }
 
@@ -242,17 +247,22 @@ func renderAbstractionSchema(raw []byte) error {
 		}
 		for _, so := range m.SubObjects {
 			label := "  sub-object"
-			if so.MinCount != nil {
-				label += fmt.Sprintf(" (min %d)", *so.MinCount)
+			if so.Required {
+				label += " (required)"
+			} else {
+				label += " (optional)"
 			}
-			if so.Condition != nil && *so.Condition != "" {
-				label += fmt.Sprintf(" [condition: %s]", *so.Condition)
+			if so.MinCount != nil {
+				label += fmt.Sprintf(" min=%d", *so.MinCount)
+			}
+			if cond := previewJSON(so.Condition); cond != "" {
+				label += fmt.Sprintf(" condition=%s", cond)
 			}
 			fmt.Println(label)
 			if len(so.Fields) == 0 {
 				continue
 			}
-			headers := []string{"Field", "Type", "Caption", "Required"}
+			headers := []string{"Field", "Type", "Caption", "Required", "Options", "Default"}
 			rows := make([][]string, len(so.Fields))
 			for j, f := range so.Fields {
 				rows[j] = []string{
@@ -260,6 +270,8 @@ func renderAbstractionSchema(raw []byte) error {
 					f.Type,
 					deref(f.Caption),
 					derefBool(&f.Required),
+					previewJSON(f.Options),
+					previewJSON(f.DefaultValue),
 				}
 			}
 			printer.Table(headers, rows)

@@ -9,12 +9,25 @@ import (
 )
 
 // setupCmd is the parent command: `kestrel setup`.
-// Subcommands are generated dynamically from the agent registry —
-// one per registered agent (e.g., `kestrel setup claude`).
+// Bare `kestrel setup` runs the interactive wizard (auth → Claude plugin →
+// shell completions → summary). Explicit subcommands remain for scripting:
+// `kestrel setup claude` installs only the plugin; `kestrel setup completions`
+// installs only shell completions.
 var setupCmd = &cobra.Command{
 	Use:   "setup",
-	Short: "Set up AI agent integrations",
-	Long:  `Installs the Kestrel plugin for your AI coding agent so it can discover and use CLI commands.`,
+	Short: "Interactively configure Kestrel (auth, agent plugin, shell completions)",
+	Long: `Walks through the steps a new user or demo machine needs to be fully wired
+up: validate or collect an API token, install the Kestrel plugin for Claude
+Code (if installed), and append a completion source line to your shell's rc
+file. Each step is optional — the wizard prompts before touching anything.
+
+For scripting, use the explicit subcommands:
+  kestrel login                   just authenticate
+  kestrel setup claude            just install the Claude plugin
+  kestrel setup completions       just install shell completions`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runSetupWizard()
+	},
 }
 
 func init() {
@@ -30,6 +43,7 @@ func init() {
 			RunE:  makeSetupHandler(a),
 		})
 	}
+	setupCmd.AddCommand(setupCompletionsCmd)
 	rootCmd.AddCommand(setupCmd)
 }
 

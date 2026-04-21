@@ -343,11 +343,7 @@ Examples:
 			if err := json.Unmarshal([]byte(slStr), &links); err != nil {
 				return fmt.Errorf("parsing --source-links as JSON: %w", err)
 			}
-			merged, count := mergeSourceLinks(links)
-			if count > 0 {
-				printer.Breadcrumb(fmt.Sprintf("Merged %d duplicate source_links entry/entries into one per document_id", count))
-			}
-			change["source_links"] = merged
+			change["source_links"] = links
 		}
 		if len(changesCreateCiteBlocks) > 0 {
 			links, err := resolveCiteBlocks(changesCreateCiteBlocks)
@@ -362,6 +358,7 @@ Examples:
 			map[string]any{"change": change},
 		)
 		if err != nil {
+			hintChangeCreateError(err)
 			return err
 		}
 		if mintedUUID != "" {
@@ -380,9 +377,14 @@ var (
 var abstractionChangesUpdateCmd = &cobra.Command{
 	Use:   "update <abstraction-id> <change-id>",
 	Short: "Update a change's payload or source links",
-	Long: `Only changes authored via the API (source: "api") in pending/rejected state
-can be updated. Omit --source-links to leave citations untouched; pass an
-empty array (--source-links '[]') to clear them.`,
+	Long: `Only API-sourced pending changes can be updated. Rejected, approved,
+and applied changes are terminal — they anchor the revised_from chain and
+can't be mutated. To change a rejected value, POST a new create via
+'changes create'; revised_from_id auto-links to the rejected predecessor.
+
+Omit --source-links to leave citations untouched; pass an empty array
+(--source-links '[]') to clear them. Providing --source-links replaces the
+existing set (same semantics as the dedup re-POST path).`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireLogin(); err != nil {
@@ -410,11 +412,7 @@ empty array (--source-links '[]') to clear them.`,
 			if err := json.Unmarshal([]byte(s), &links); err != nil {
 				return fmt.Errorf("parsing --source-links as JSON: %w", err)
 			}
-			merged, count := mergeSourceLinks(links)
-			if count > 0 {
-				printer.Breadcrumb(fmt.Sprintf("Merged %d duplicate source_links entry/entries into one per document_id", count))
-			}
-			change["source_links"] = merged
+			change["source_links"] = links
 		}
 		if len(change) == 0 {
 			return &UsageError{Arg: "payload or source-links", Usage: "kestrel abstractions changes update <abs-id> <change-id> --payload ... [--source-links ...]"}
@@ -426,8 +424,15 @@ empty array (--source-links '[]') to clear them.`,
 		)
 		if err != nil {
 			var apiErr *api.APIError
-			if errors.As(err, &apiErr) && apiErr.StatusCode == 403 {
-				printer.Errorf("update refused — only API-sourced changes in pending/rejected state can be edited via the API")
+			if errors.As(err, &apiErr) {
+				switch apiErr.StatusCode {
+				case 403:
+					printer.Errorf("update refused — only API-sourced pending changes can be edited via the API")
+				case 422:
+					// Rejected/approved/applied are terminal — redraft via a
+					// new POST instead (revised_from_id auto-links).
+					printer.Errorf("update refused — change is in a terminal state (rejected/approved/applied). Draft a replacement via `kestrel abstractions changes create ...`; revised_from_id auto-links to the rejected predecessor.")
+				}
 			}
 			return err
 		}
@@ -518,27 +523,6 @@ Example batch file:
 			}
 		}
 
-		// Pre-merge duplicate source_links per item so agents don't trip the
-		// server's "Linkable is already linked" rejection — which rolls back
-		// the whole batch.
-		totalMerges := 0
-		for _, item := range changes {
-			m, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			if links, exists := m["source_links"]; exists {
-				merged, count := mergeSourceLinks(links)
-				if count > 0 {
-					m["source_links"] = merged
-					totalMerges += count
-				}
-			}
-		}
-		if totalMerges > 0 {
-			printer.Breadcrumb(fmt.Sprintf("Merged %d duplicate source_links entry/entries across batch items", totalMerges))
-		}
-
 		status, body, err := client.PostRaw(
 			"/abstractions/"+args[0]+"/changes/batch",
 			map[string]any{"changes": changes},
@@ -596,6 +580,7 @@ func renderBatchFailure(status int, body []byte) error {
 		Code   string `json:"code"`
 		Errors []struct {
 			Index  int      `json:"index"`
+			Code   string   `json:"code"`
 			Errors []string `json:"errors"`
 		} `json:"errors"`
 	}
@@ -606,7 +591,26 @@ func renderBatchFailure(status int, body []byte) error {
 	if !printer.IsStructured() && len(resp.Errors) > 0 {
 		fmt.Fprintln(os.Stderr, "Batch rolled back — per-item errors:")
 		for _, item := range resp.Errors {
-			fmt.Fprintf(os.Stderr, "  [%d] %s\n", item.Index, strings.Join(item.Errors, "; "))
+			codeStr := ""
+			if item.Code != "" {
+				codeStr = " (" + item.Code + ")"
+			}
+			fmt.Fprintf(os.Stderr, "  [%d]%s %s\n", item.Index, codeStr, strings.Join(item.Errors, "; "))
+		}
+		// Surface targeted hints for the most actionable codes. Fire at most
+		// once per code per batch — a flood of identical hints is noise.
+		seenCodes := map[string]bool{}
+		for _, item := range resp.Errors {
+			if item.Code == "" || seenCodes[item.Code] {
+				continue
+			}
+			seenCodes[item.Code] = true
+			switch item.Code {
+			case "payload_extra_keys":
+				fmt.Fprintln(os.Stderr, "  hint: one scalar field per change, one payload key per change. Multi-key payloads are only legal on primary-target (Property/Lease) creates.")
+			case "channel_locked":
+				fmt.Fprintln(os.Stderr, "  hint: a web_ui change already holds the pending slot for at least one of these fields. Reject it in the web UI before retrying.")
+			}
 		}
 	}
 	// Flatten per-item errors into a single []string for APIError so existing
@@ -635,8 +639,10 @@ func renderBatchFailure(status int, body []byte) error {
 var abstractionChangesDeleteCmd = &cobra.Command{
 	Use:   "delete <abstraction-id> <change-id>",
 	Short: "Delete a staged change",
-	Long:  `Only API-sourced changes in pending/rejected state can be deleted.`,
-	Args:  cobra.ExactArgs(2),
+	Long: `Only API-sourced pending changes can be deleted. Rejected, approved,
+and applied changes are terminal — they're part of the review trail and
+revised_from chain, and can't be removed via the API.`,
+	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireLogin(); err != nil {
 			return err
@@ -644,8 +650,13 @@ var abstractionChangesDeleteCmd = &cobra.Command{
 		env, err := client.Delete("/abstractions/" + args[0] + "/changes/" + args[1])
 		if err != nil {
 			var apiErr *api.APIError
-			if errors.As(err, &apiErr) && apiErr.StatusCode == 403 {
-				printer.Errorf("delete refused — only API-sourced changes in pending/rejected state can be deleted")
+			if errors.As(err, &apiErr) {
+				switch apiErr.StatusCode {
+				case 403:
+					printer.Errorf("delete refused — only API-sourced pending changes can be deleted")
+				case 422:
+					printer.Errorf("delete refused — change is in a terminal state (rejected/approved/applied); terminal records are preserved for audit and revised_from chains")
+				}
 			}
 			return err
 		}
@@ -685,85 +696,6 @@ func summarizeLinkPreview(previews []abstractionLinkPreview) string {
 		return fmt.Sprintf("%s (+%d)", head, fragCount-1)
 	}
 	return head
-}
-
-// mergeSourceLinks collapses duplicate document_id entries into one, with the
-// fragments arrays concatenated in input order. The server rejects a batch
-// when multiple source_links entries cite the same document ("Linkable is
-// already linked"), so agents writing {doc_id: 1, fragments: [A]} and
-// {doc_id: 1, fragments: [B]} separately would otherwise hit 422.
-//
-// Returns (merged, mergedCount). mergedCount > 0 means duplicates were
-// collapsed; the caller can breadcrumb a warning.
-func mergeSourceLinks(raw any) (any, int) {
-	arr, ok := raw.([]any)
-	if !ok {
-		return raw, 0
-	}
-	byDoc := map[int]map[string]any{}
-	docOrder := []int{}
-	mergeCount := 0
-	for _, item := range arr {
-		m, ok := item.(map[string]any)
-		if !ok {
-			return raw, 0
-		}
-		docIDRaw, exists := m["document_id"]
-		if !exists {
-			return raw, 0
-		}
-		docID, ok := coerceInt(docIDRaw)
-		if !ok {
-			return raw, 0
-		}
-		if existing, seen := byDoc[docID]; seen {
-			mergeCount++
-			efrags, _ := existing["fragments"].([]any)
-			nfrags, _ := m["fragments"].([]any)
-			existing["fragments"] = append(efrags, nfrags...)
-			continue
-		}
-		// Shallow-copy so we don't mutate the caller's input when we
-		// later append fragments.
-		copied := map[string]any{}
-		for k, v := range m {
-			copied[k] = v
-		}
-		if frags, ok := copied["fragments"].([]any); ok {
-			dup := make([]any, len(frags))
-			copy(dup, frags)
-			copied["fragments"] = dup
-		}
-		byDoc[docID] = copied
-		docOrder = append(docOrder, docID)
-	}
-	if mergeCount == 0 {
-		return raw, 0
-	}
-	out := make([]any, 0, len(docOrder))
-	for _, docID := range docOrder {
-		out = append(out, byDoc[docID])
-	}
-	return out, mergeCount
-}
-
-// coerceInt handles the two shapes a numeric JSON value takes in an
-// any-typed map: float64 (default unmarshal) or json.Number (decoder with
-// UseNumber). Neither is guaranteed by our input, so accept both.
-func coerceInt(v any) (int, bool) {
-	switch n := v.(type) {
-	case int:
-		return n, true
-	case float64:
-		return int(n), true
-	case json.Number:
-		i, err := n.Int64()
-		if err != nil {
-			return 0, false
-		}
-		return int(i), true
-	}
-	return 0, false
 }
 
 // resolveCiteBlocks converts --cite-block specs into the source_links shape the
@@ -864,6 +796,23 @@ func fetchBlockDocumentID(blockID int) (int, error) {
 		return 0, fmt.Errorf("block %d response missing document_id", blockID)
 	}
 	return b.DocumentID, nil
+}
+
+// hintChangeCreateError inspects a POST /changes error and prints a targeted
+// stderr hint before the structured error propagates. Matches the pattern
+// used on add-doc / remove-doc. Quiet in --agent / --json mode; those paths
+// already carry `code` and `error` on the envelope.
+func hintChangeCreateError(err error) {
+	var apiErr *api.APIError
+	if !errors.As(err, &apiErr) {
+		return
+	}
+	switch apiErr.Code {
+	case "payload_extra_keys":
+		printer.Errorf("payload rejected — one scalar field per change, one payload key per change. Multi-key payloads are only legal on primary-target (Property/Lease) creates.")
+	case "channel_locked":
+		printer.Errorf("channel_locked — a web_ui change already holds this field's pending slot. Reject it in the web UI (or have the drafter cancel) before POSTing an api replacement.")
+	}
 }
 
 // renderChangeResult prints a created/updated change.
