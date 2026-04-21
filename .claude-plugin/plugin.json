@@ -1,6 +1,6 @@
 {
   "name": "kestrel",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Kestrel Portfolio integration for Claude Code. Browse properties, leases, and portfolio data; author lease abstractions with block-anchored citations.",
   "author": {
     "name": "Kestrel Portfolio",
