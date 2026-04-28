@@ -111,6 +111,14 @@ Agent integration:
 // "Error: …" to stderr otherwise, and a categorized exit code.
 func Execute() {
 	err := rootCmd.Execute()
+
+	// Best-effort: if the running binary version differs from the last-run
+	// sentinel, refresh installed SKILL.md files so users on Codex/OpenCode
+	// don't drift after upgrades. Silent, no-op when version matches. Runs
+	// regardless of command success — refresh is a pure filesystem op and
+	// shouldn't depend on whether the user's command worked.
+	refreshSkillsIfVersionChanged()
+
 	if err == nil {
 		os.Exit(ExitOK)
 	}

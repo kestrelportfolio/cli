@@ -30,6 +30,13 @@ func detectClaude() bool {
 	return err == nil
 }
 
+// DetectClaude is the exported form of detectClaude — used by callers outside
+// this package (e.g. the skill installer) that need to branch on Claude
+// being present without going through the registry.
+func DetectClaude() bool {
+	return detectClaude()
+}
+
 // checkClaude runs health checks for Claude Code integration.
 func checkClaude() []StatusCheck {
 	var checks []StatusCheck

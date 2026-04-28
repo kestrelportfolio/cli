@@ -108,6 +108,36 @@ func SaveGlobal(updates *Config) error {
 	return nil
 }
 
+// ClearToken removes the saved token from the global config file, preserving
+// other fields like BaseURL. Returns (cleared, error) — cleared is false if no
+// token was set or the config file didn't exist.
+func ClearToken() (bool, error) {
+	configPath, err := GlobalConfigPath()
+	if err != nil {
+		return false, fmt.Errorf("resolving config path: %w", err)
+	}
+
+	existing := &Config{}
+	loadFromFile(existing, configPath)
+
+	if existing.Token == "" {
+		return false, nil
+	}
+
+	existing.Token = ""
+
+	data, err := json.MarshalIndent(existing, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("encoding config: %w", err)
+	}
+
+	if err := os.WriteFile(configPath, data, 0600); err != nil {
+		return false, fmt.Errorf("writing config file: %w", err)
+	}
+
+	return true, nil
+}
+
 // loadFromFile reads a JSON config file and merges non-empty values into cfg.
 // Silently returns if the file doesn't exist — this is expected for fresh installs.
 func loadFromFile(cfg *Config, path string) {

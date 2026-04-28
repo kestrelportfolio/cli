@@ -37,8 +37,10 @@ func init() {
 	for _, agent := range harness.AllAgents() {
 		a := agent // capture for closure (Go gotcha: loop vars are reused)
 		setupCmd.AddCommand(&cobra.Command{
-			Use:   a.ID,
-			Short: fmt.Sprintf("Install the Kestrel plugin for %s", a.Name),
+			Use: a.ID,
+			// "integration" is the neutral term — Claude gets a plugin install,
+			// Codex/OpenCode get a SKILL.md drop. Both are integrations.
+			Short: fmt.Sprintf("Install the Kestrel integration for %s", a.Name),
 			Long:  fmt.Sprintf("Sets up the %s integration so %s can discover and use Kestrel commands.", a.Name, a.Name),
 			RunE:  makeSetupHandler(a),
 		})
@@ -47,13 +49,21 @@ func init() {
 	rootCmd.AddCommand(setupCmd)
 }
 
-// makeSetupHandler returns the RunE function for a specific agent's setup command.
-// Right now only Claude is registered, but this dispatches generically.
+// makeSetupHandler returns the RunE function for a specific agent's setup
+// command. Claude has its own plugin install flow; Codex and OpenCode are
+// skill-file-only (no plugin/marketplace concept) and route through the
+// shared runSkillOnlySetup helper in cmd/skill.go.
 func makeSetupHandler(agent harness.AgentInfo) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		switch agent.ID {
 		case "claude":
 			return runClaudeSetup()
+		case "codex":
+			// codexGlobalSkillPath honors $CODEX_HOME; resolves to the
+			// installed location at command time, not package init.
+			return runSkillOnlySetup("Codex", codexGlobalSkillPath())
+		case "opencode":
+			return runSkillOnlySetup("OpenCode", "~/.config/opencode/skill/kestrel/SKILL.md")
 		default:
 			return fmt.Errorf("setup not implemented for %s", agent.Name)
 		}

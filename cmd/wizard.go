@@ -16,12 +16,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// runSetupWizard walks a user through auth + Claude plugin + shell completion
-// in one interactive flow. Intentionally non-scripting; refuses to run in
-// --agent or --json mode where explicit subcommands are the correct path.
+// runSetupWizard walks a user through auth → agent skill → Claude plugin →
+// shell completion in one interactive flow. Intentionally non-scripting;
+// refuses to run in --agent or --json mode where explicit subcommands are
+// the correct path.
 func runSetupWizard() error {
 	if printer.IsStructured() {
-		return fmt.Errorf("the interactive wizard isn't available in --json/--agent mode. Use the explicit subcommands instead: kestrel login, kestrel setup claude, kestrel setup completions")
+		return fmt.Errorf("the interactive wizard isn't available in --json/--agent mode. Use the explicit subcommands instead: kestrel login, kestrel skill install, kestrel setup claude, kestrel setup completions")
 	}
 
 	fmt.Println()
@@ -35,8 +36,12 @@ func runSetupWizard() error {
 		return err
 	}
 	fmt.Println()
+	if err := wizardSkill(reader); err != nil {
+		// Skill install is optional — don't fail the whole wizard.
+		fmt.Fprintln(os.Stderr, "  Skipping: "+err.Error())
+	}
+	fmt.Println()
 	if err := wizardClaude(reader); err != nil {
-		// Plugin install is optional — don't fail the whole wizard.
 		fmt.Fprintln(os.Stderr, "  Skipping: "+err.Error())
 	}
 	fmt.Println()
@@ -51,6 +56,75 @@ func runSetupWizard() error {
 	fmt.Println("    kestrel properties list     # first real call")
 	fmt.Println("    kestrel doctor              # full health check")
 	fmt.Println()
+	return nil
+}
+
+// wizardSkill writes the canonical SKILL.md baseline at ~/.agents/skills/kestrel/
+// and offers per-agent fan-out for Codex and OpenCode when they're detected.
+// Claude is handled by the next step (wizardClaude) since it has its own
+// plugin install path.
+//
+// The baseline is the source-of-truth for the upgrade-time auto-refresh, so
+// it gets installed even if the user declines every per-agent fan-out.
+func wizardSkill(reader *bufio.Reader) error {
+	fmt.Println("Step 2: Agent skill")
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolving home directory: %w", err)
+	}
+	baselineFile := filepath.Join(home, ".agents", "skills", "kestrel", skillFilename)
+
+	if _, err := os.Stat(baselineFile); err == nil {
+		fmt.Printf("  ✓ Baseline skill already installed at %s\n", baselineFile)
+	} else {
+		if !promptYesNo(reader, "  Install the Kestrel agent skill to ~/.agents/skills/kestrel/?", true) {
+			fmt.Println("  Skipped. Install later with: kestrel skill install")
+			return nil
+		}
+		skillPath, err := installSkillFiles()
+		if err != nil {
+			return fmt.Errorf("installing baseline skill: %w", err)
+		}
+		fmt.Printf("  ✓ Installed → %s\n", skillPath)
+	}
+
+	// Per-agent fan-out. Each entry is a detected non-Claude agent that reads
+	// SKILL.md from a fixed location. Claude is intentionally absent — its
+	// plugin install in the next step handles its skill registration.
+	fanouts := []struct {
+		agentID    string
+		agentName  string
+		targetPath string
+	}{
+		{"codex", "Codex", codexGlobalSkillPath()},
+		{"opencode", "OpenCode", "~/.config/opencode/skill/kestrel/SKILL.md"},
+	}
+
+	for _, fanout := range fanouts {
+		agent := harness.FindAgent(fanout.agentID)
+		if agent == nil || agent.Detect == nil || !agent.Detect() {
+			continue
+		}
+
+		targetExpanded := expandSkillPath(fanout.targetPath)
+		if _, err := os.Stat(targetExpanded); err == nil {
+			fmt.Printf("  ✓ %s skill already installed\n", fanout.agentName)
+			continue
+		}
+
+		if !promptYesNo(reader, fmt.Sprintf("  Also install for %s at %s?", fanout.agentName, fanout.targetPath), true) {
+			continue
+		}
+
+		if _, _, err := installSkillAt(targetExpanded); err != nil {
+			// Per-agent fan-out failure isn't fatal — skip and continue.
+			fmt.Fprintln(os.Stderr, "  notice: "+fanout.agentName+" install failed: "+err.Error())
+			continue
+		}
+		fmt.Printf("  ✓ Installed for %s → %s\n", fanout.agentName, targetExpanded)
+	}
+
 	return nil
 }
 
@@ -131,8 +205,13 @@ func whoAmI(token string) (*wizardMe, error) {
 // wizardClaude offers to install the Claude Code plugin when the claude
 // binary is on PATH. Silent skip when it isn't — we don't assume every user
 // is a Claude Code user.
+//
+// After the plugin install (or if the plugin was already installed), creates
+// the global skill symlink at ~/.claude/skills/kestrel as a fallback for
+// users who later remove the plugin — the skill stays registered through the
+// baseline. Always best-effort; failures don't fail the wizard.
 func wizardClaude(reader *bufio.Reader) error {
-	fmt.Println("Step 2: Claude Code integration")
+	fmt.Println("Step 3: Claude Code integration")
 
 	if _, err := exec.LookPath("claude"); err != nil {
 		fmt.Println("  Claude Code binary not on PATH — skipping plugin install.")
@@ -143,22 +222,32 @@ func wizardClaude(reader *bufio.Reader) error {
 
 	if claudePluginInstalled() {
 		fmt.Println("  ✓ Kestrel plugin already installed.")
-		return nil
+	} else {
+		if !promptYesNo(reader, "  Install the Kestrel plugin for Claude Code?", true) {
+			fmt.Println("  Skipped. Install later with: kestrel setup claude")
+			return nil
+		}
+
+		steps, err := harness.RunClaudeSetup()
+		for _, step := range steps {
+			fmt.Println("  • " + step)
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Println("  ✓ Plugin installed. Start a new Claude Code session to pick it up.")
 	}
 
-	if !promptYesNo(reader, "  Install the Kestrel plugin for Claude Code?", true) {
-		fmt.Println("  Skipped. Install later with: kestrel setup claude")
-		return nil
+	// Tail action: keep the global skill symlink in sync. Handles the
+	// "plugin ok, link broken" repair case and gives non-plugin users a
+	// fallback registration path.
+	if symlinkPath, notice, err := linkSkillToClaude(); err == nil {
+		fmt.Printf("  ✓ Linked global skill → %s\n", symlinkPath)
+		if notice != "" {
+			fmt.Fprintln(os.Stderr, "  notice: "+notice)
+		}
 	}
 
-	steps, err := harness.RunClaudeSetup()
-	for _, step := range steps {
-		fmt.Println("  • " + step)
-	}
-	if err != nil {
-		return err
-	}
-	fmt.Println("  ✓ Plugin installed. Start a new Claude Code session to pick it up.")
 	return nil
 }
 
@@ -187,7 +276,7 @@ func claudePluginInstalled() bool {
 // wizardCompletions appends a `source <(kestrel completion <shell>)` line to
 // the user's rc file, after a dedupe check. No-op on unknown shells.
 func wizardCompletions(reader *bufio.Reader) error {
-	fmt.Println("Step 3: Shell completions")
+	fmt.Println("Step 4: Shell completions")
 
 	plan, err := completionPlanForShell(os.Getenv("SHELL"))
 	if err != nil {
