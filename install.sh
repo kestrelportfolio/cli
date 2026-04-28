@@ -112,7 +112,7 @@ if command -v kestrel &>/dev/null; then
   echo
   echo "Next steps:"
   echo "  kestrel login          Authenticate with your API token"
-  echo "  kestrel setup claude   Set up Claude Code integration"
+  echo "  kestrel setup          Walk through auth + agent skill + Claude plugin + completions"
 else
   echo "✓ Installed, but ${DEST} may not be in your PATH."
   echo "  Add it with: export PATH=\"${DEST}:\$PATH\""

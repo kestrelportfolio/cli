@@ -32,6 +32,15 @@
    - Download a binary and run `kestrel version` to confirm
    - `brew update && brew upgrade kestrel` should pick up the new version
 
+## Plugin and skill updates
+
+A release also updates the Claude Code plugin and the SKILL.md every agent reads — no separate republish step.
+
+- **Claude plugin users:** the plugin source lives in `.claude-plugin/` in this repo, and `.claude-plugin/skills/kestrel` is a symlink to `../../skills/kestrel`. When a user runs `claude plugin update kestrel@kestrel-plugins`, they pull the new SKILL.md along with everything else.
+- **Codex / OpenCode / non-plugin Claude users:** the binary embeds SKILL.md at build time. On the first invocation after upgrade, `Execute()` compares the binary's version to the sentinel at `~/.config/kestrel/.last-run-version` and rewrites every installed `SKILL.md` location silently. Hot-path cost when versions match is one `os.ReadFile`.
+
+If you change `skills/kestrel/SKILL.md` between releases, both surfaces will pick up the new content on the next `git push --tags`.
+
 ## Local Testing (without publishing)
 
 To test the full build locally without creating a release:
