@@ -1,9 +1,9 @@
 ---
 name: kestrel
 description: |
-  Interact with Kestrel Portfolio — a commercial real estate portfolio management
-  system — via the kestrel CLI. Browse properties, leases, expenses, documents,
-  and key dates; author lease abstractions end-to-end (the only write surface).
+  Interact with Kestrel Portfolio — a lease administration system for global
+  retailors and other occupiers — via the kestrel CLI. Purpose built for
+  authoring lease abstractions end-to-end.
 triggers:
   - kestrel
   - /kestrel
