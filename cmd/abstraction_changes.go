@@ -214,16 +214,19 @@ var abstractionChangesShowCmd = &cobra.Command{
 }
 
 var (
-	changesCreateAction           string
-	changesCreateTargetType       string
-	changesCreateTargetID         int
-	changesCreateTargetField      string
-	changesCreateSubObjectGroup   string
-	changesCreateParentChangeID   int
-	changesCreateRevisedFromID    int
-	changesCreatePayloadInput     string
-	changesCreateSourceLinksInput string
-	changesCreateCiteBlocks       []string
+	changesCreateAction             string
+	changesCreateTargetType         string
+	changesCreateTargetID           int
+	changesCreateTargetField        string
+	changesCreateSubObjectGroup     string
+	changesCreateParentChangeID     int
+	changesCreateRevisedFromID      int
+	changesCreatePayloadInput       string
+	changesCreateSourceLinksInput   string
+	changesCreateCiteBlocks         []string
+	changesCreateAnchorSpecs        []string
+	changesCreateAnchorResolution   string
+	changesCreateProvisionalDate    string
 )
 
 var abstractionChangesCreateCmd = &cobra.Command{
@@ -267,7 +270,41 @@ Examples:
   kestrel abstractions changes create 42 \
     --action update --target-type Lease --target-id 7 \
     --payload '{"start_date":"2026-01-01"}' \
-    --source-links '[{"document_id":87,"fragments":[{"page_number":3,"x":0.1,"y":0.2,"width":0.3,"height":0.05}]}]'`,
+    --source-links '[{"document_id":87,"fragments":[{"page_number":3,"x":0.1,"y":0.2,"width":0.3,"height":0.05}]}]'
+
+Anchored (relative) date fields — the CLI builds the relative payload for you
+when --anchor is supplied. Requires --target-field; --payload must be omitted
+(the CLI assembles {target_field: {mode:"relative",...}} itself).
+
+  --anchor <spec>            Repeatable. Comma-separated key=value pairs:
+                               target_type=Lease,target_field=start_date,
+                               offset_months=12,offset_days=0,inclusive=false
+                             Live-record anchors take target_id=N; sibling
+                             draft anchors take sub_object_group=<uuid>;
+                             primary-target Lease/Property anchors take
+                             neither.
+  --anchor-resolution        earliest_of | latest_of. Required when 2+ anchors.
+                             Defaults to earliest_of for single-anchor specs.
+  --provisional-date <date>  Optional override (YYYY-MM-DD). When omitted the
+                             CLI computes a best-guess by fetching
+                             /anchorable_dates and applying each anchor's
+                             offset to the live current_value when available;
+                             if every anchor is itself a draft and pending
+                             resolution, falls back to today's date so the
+                             field's column-NOT-NULL invariant holds at
+                             phase 1 of go-live (phase 2 then resolves
+                             authoritatively from the dependency graph).
+
+  # Anchored sub-object date — KeyDate.date = Lease.start_date + 90 days
+  kestrel abstractions changes create 42 \
+    --action create --target-type KeyDate --sub-object-group new \
+    --target-field date \
+    --anchor "target_type=Lease,target_field=start_date,offset_days=90,inclusive=false" \
+    --cite-block 4280
+
+Discover valid anchor refs:
+
+  kestrel abstractions anchorable-dates 42 --agent`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := requireLogin(); err != nil {
@@ -314,19 +351,55 @@ Examples:
 			}
 		}
 
-		// Payload is required — parse input into a generic JSON value.
-		payloadStr, err := readInputValue(changesCreatePayloadInput)
-		if err != nil {
-			return err
+		// Payload assembly — three modes:
+		//   1. --anchor supplied → CLI builds relative-date payload around target_field.
+		//   2. --payload supplied → caller-controlled JSON.
+		//   3. neither → usage error.
+		// (1) and (2) are mutually exclusive — anchor mode owns the payload shape.
+		hasAnchor := len(changesCreateAnchorSpecs) > 0
+		if hasAnchor && changesCreatePayloadInput != "" {
+			return &UsageError{
+				Arg:   "anchor and payload",
+				Usage: "pass --anchor (CLI builds the relative payload) OR --payload (raw JSON), not both",
+			}
 		}
-		if payloadStr == "" {
-			return &UsageError{Arg: "payload", Usage: "--payload '{\"field\":\"value\"}' or --payload @file.json or --payload -"}
+		if hasAnchor {
+			if changesCreateTargetField == "" {
+				return &UsageError{
+					Arg:   "target-field",
+					Usage: "--anchor requires --target-field (the date field being anchored)",
+				}
+			}
+			anchors := make([]*anchorSpec, 0, len(changesCreateAnchorSpecs))
+			for _, raw := range changesCreateAnchorSpecs {
+				spec, err := parseAnchorSpec(raw)
+				if err != nil {
+					return err
+				}
+				anchors = append(anchors, spec)
+			}
+			rel, provisional, inferred, err := buildRelativePayload(args[0], changesCreateAnchorResolution, anchors, changesCreateProvisionalDate)
+			if err != nil {
+				return err
+			}
+			change["payload"] = map[string]any{changesCreateTargetField: rel}
+			if inferred {
+				printer.Breadcrumb(fmt.Sprintf("provisional_date inferred as %s — pass --provisional-date to override", provisional))
+			}
+		} else {
+			payloadStr, err := readInputValue(changesCreatePayloadInput)
+			if err != nil {
+				return err
+			}
+			if payloadStr == "" {
+				return &UsageError{Arg: "payload", Usage: "--payload '{\"field\":\"value\"}' or --payload @file.json or --payload - (or use --anchor for a relative-date payload)"}
+			}
+			var payload any
+			if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
+				return fmt.Errorf("parsing --payload as JSON: %w", err)
+			}
+			change["payload"] = payload
 		}
-		var payload any
-		if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
-			return fmt.Errorf("parsing --payload as JSON: %w", err)
-		}
-		change["payload"] = payload
 
 		// source_links can come from --cite-block (resolved to JSON) or --source-links
 		// (passed through verbatim). Rejecting both keeps the mental model simple.
@@ -961,9 +1034,12 @@ func init() {
 	abstractionChangesCreateCmd.Flags().StringVar(&changesCreateSubObjectGroup, "sub-object-group", "", "UUID grouping sibling field changes, or 'new' to mint one")
 	abstractionChangesCreateCmd.Flags().IntVar(&changesCreateParentChangeID, "parent-change-id", 0, "Parent change this one depends on")
 	abstractionChangesCreateCmd.Flags().IntVar(&changesCreateRevisedFromID, "revised-from-id", 0, "Change ID this one supersedes (auto-linked to rejected predecessors if omitted)")
-	abstractionChangesCreateCmd.Flags().StringVar(&changesCreatePayloadInput, "payload", "", `Attribute payload as JSON, @file, or - for stdin (required)`)
+	abstractionChangesCreateCmd.Flags().StringVar(&changesCreatePayloadInput, "payload", "", `Attribute payload as JSON, @file, or - for stdin (required unless --anchor is used)`)
 	abstractionChangesCreateCmd.Flags().StringVar(&changesCreateSourceLinksInput, "source-links", "", `Source links array as JSON, @file, or - for stdin`)
 	abstractionChangesCreateCmd.Flags().StringSliceVar(&changesCreateCiteBlocks, "cite-block", nil, `Cite a parsed block. Repeatable. Formats: <block-id>, <block-id>:chars=S-E, <block-id>:cell=R,C`)
+	abstractionChangesCreateCmd.Flags().StringSliceVar(&changesCreateAnchorSpecs, "anchor", nil, `Anchor spec for a relative-date payload. Repeatable. Format: target_type=...,target_field=...,[target_id=N|sub_object_group=UUID,]offset_months=N,offset_days=N,inclusive=true|false. Mutually exclusive with --payload; requires --target-field.`)
+	abstractionChangesCreateCmd.Flags().StringVar(&changesCreateAnchorResolution, "anchor-resolution", "", `earliest_of|latest_of (defaults to earliest_of for single-anchor; required for multi-anchor)`)
+	abstractionChangesCreateCmd.Flags().StringVar(&changesCreateProvisionalDate, "provisional-date", "", `Override the CLI-computed provisional_date (YYYY-MM-DD)`)
 
 	abstractionChangesUpdateCmd.Flags().StringVar(&changesUpdatePayloadInput, "payload", "", `New payload as JSON, @file, or -`)
 	abstractionChangesUpdateCmd.Flags().StringVar(&changesUpdateSourceLinksInput, "source-links", "", `New source links as JSON, @file, or - (pass '[]' to clear)`)

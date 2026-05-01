@@ -143,19 +143,25 @@ web UI before it goes live.
     when you *already have* the whole set assembled from another source
     (CSV import, cross-abstraction copy, programmatic translation). Max 500
     items per batch when you do use it.
-13. **One payload key per change. Always.** The server rejects multi-key
-    payloads on any create or update with 422 `payload_extra_keys` —
-    including Property and Lease creates. The rule is uniform across every
-    target_type: one field value per change, one change per field value.
-    The reason is provenance binding: a change with N values and M
-    highlights in `source_links` has no way to map which highlight backs
-    which value, so the reviewer's 1:1 field→evidence check collapses.
-    Streaming per-field creates keeps each value paired with exactly its
-    source block(s), and multi-field record creation still works — the
-    applier merges per-field siblings at go-live, same as sub-objects do
-    via `sub_object_group`. Round-trip-sensitive flows compose N per-field
-    items into `changes create-batch`; every batch item has the same
-    shape regardless of target_type.
+13. **One payload key per change. Always — except for opaque target types.**
+    The server rejects multi-key payloads on any create or update with 422
+    `payload_extra_keys` for every target_type *except* the explicitly
+    opaque ones — currently `Increase`, where one change carries the whole
+    series spec (effective_date + type-specific fields + tiers + recurrence)
+    with `target_field` left null. The carve-out is whitelisted server-side;
+    don't try it on other types. The provenance binding rationale still
+    holds for non-opaque types: one value per change, one change per value,
+    so the reviewer's 1:1 field→evidence check works. Streaming per-field
+    creates keeps each value paired with exactly its source block(s), and
+    multi-field record creation still works — the applier merges per-field
+    siblings at go-live, same as sub-objects do via `sub_object_group`.
+    Round-trip-sensitive flows compose N per-field items into
+    `changes create-batch`; every batch item has the same shape regardless
+    of target_type. **Increase** authoring goes through the dedicated
+    `kestrel abstractions increase create` command (see "Increases and
+    date dependencies" below) — it constructs the opaque payload and
+    handles the indexation tier shape, anchored effective_date, and
+    recurrence flags.
 14. **Don't download the PDF to read it yourself.** When a document has a
     complete parse, `documents search "q"` or `documents blocks --type heading` is
     faster, produces block-anchored citations the abstraction-review flow
@@ -239,6 +245,12 @@ introspection.
 | List / filter staged changes         | `kestrel abstractions changes list <abs-id> [--state rejected] --agent`                                  |
 | Bulk import N changes                | `kestrel abstractions changes create-batch <abs-id> --file @batch.json`  (max 500, all-or-nothing)       |
 | Update / delete a change             | `kestrel abstractions changes update <abs-id> <change-id> --payload @new.json` / `delete <abs-id> <change-id>` |
+| Discover anchor refs                 | `kestrel abstractions anchorable-dates <abs-id> --agent`                                                 |
+| Anchor a date field (relative)       | add `--anchor "target_type=…,target_field=…[,target_id=N|sub_object_group=UUID],offset_months=N,offset_days=N,inclusive=true|false"` (repeatable) + `--anchor-resolution earliest_of|latest_of` to `changes create` |
+| Override CLI provisional_date        | `--provisional-date YYYY-MM-DD` on `changes create` or `increase create`                                 |
+| Draft an Increase (rent escalation)  | `kestrel abstractions increase create <abs-id> --increasable-sub-object-group $G --type fixed|percentage|indexation [type-flags] --effective-date YYYY-MM-DD | --anchor "…" --cite-block <id>` |
+| Indexation tiers                     | repeat `--tier "<lo>:<hi>:<rate>"` (blank = open-ended; e.g. `:4:100` and `4::50`)                       |
+| Increase recurrence                  | `--recurrence-cadence lease_anniversary|expense_start_anniversary|january_1|custom` (custom adds `--recurrence-interval-amount N --recurrence-interval-unit years|quarters|months`) |
 | Abandon an abstraction               | `kestrel abstractions abandon <abs-id>`                                                                  |
 
 ## Authoring decision tree
@@ -276,10 +288,189 @@ Want to change lease data?
 │   ├── Substring citation: --cite-block <block-id>:chars=14-72
 │   ├── Table cell citation: --cite-block <block-id>:cell=2,1
 │   ├── Sub-object create: --action create --target-type KeyDate --sub-object-group new --payload '{…}' --cite-block <block-id>
+│   ├── Anchored date (relative): add --anchor "target_type=…,target_field=…,…" + --anchor-resolution
+│   │   (CLI infers provisional_date; pre-discover anchors with `abstractions anchorable-dates <abs-id>`)
+│   ├── Increase / rent escalation: kestrel abstractions increase create <abs-id> --increasable-sub-object-group $G --type fixed|percentage|indexation …
 │   └── Bulk import path (only when you already have the whole set):
 │       kestrel abstractions changes create-batch <abs-id> --file @batch.json
 └── 7. (Human completes in web UI: review, approve, go-live)
 ```
+
+## Increases and date dependencies
+
+Two related features that go beyond plain per-field abstraction changes:
+
+- **Increases** are rent escalations / amount changes on an Expense. Each
+  one is fixed (new absolute amount), percentage (% step on the prior
+  resolved amount), or indexation (CPI-linked, derived from inflation
+  observations between two periods, optionally tiered and clamped by
+  floor/ceiling). On the abstraction side they are an **opaque target
+  type**: one `AbstractionChange` carries the whole series spec with
+  `target_field=null` and a multi-key payload. Don't try to draft them
+  one-field-at-a-time — use the dedicated command.
+- **Date dependencies** let a date field anchor to another date in the
+  same abstraction (or a live record on the target Property/Lease). Same
+  change endpoint, but the value position carries a `{mode:"relative",
+  resolution, provisional_date, anchors:[…]}` payload instead of a literal
+  date. Cascade resolves the resolved date at go-live. Increases are also
+  date-dependency-aware — `effective_date` accepts the same relative
+  payload, anchored to the parent Expense's start/end (or the Lease's
+  dates).
+
+Both features require `Organization#date_dependencies_enabled` to be on for
+the org. When it's off, `anchorable-dates` returns an empty list and
+relative-date payloads are rejected.
+
+### Discover available anchor refs first
+
+```bash
+kestrel abstractions anchorable-dates 42 --agent
+# → {anchors:[
+#     {kind:"primary_target_live",  target_type:"Lease",   target_field:"start_date",
+#      label:"Lease: Start Date",   current_value:"2026-01-01"},
+#     {kind:"draft",                target_type:"KeyDate", target_field:"date",
+#      sub_object_group:"e8c2…",   label:"Lease Expiration",
+#      current_value:null,          state:"pending"},
+#     ...
+#   ]}
+```
+
+The list is the source of truth for what you can anchor against — same as
+the web picker. Each entry maps directly into a `--anchor` spec: copy
+`target_type`, `target_field`, and whichever of `target_id` /
+`sub_object_group` is set.
+
+### Anchor a date field with `--anchor` (non-Increase)
+
+For any date field on a non-opaque target type (KeyDate.date,
+Lease.start_date, Expense.start_date/end_date, LeaseSecurity.required_date,
+SalesRentTerm.start_date/end_date), use `--anchor` on the generic
+`changes create`. Repeat `--anchor` for multi-anchor specs. Add
+`--anchor-resolution earliest_of|latest_of` (required when 2+ anchors).
+The CLI builds the relative payload around `--target-field` and computes
+a best-guess `provisional_date` — fetched from `anchorable-dates` and
+shifted by each anchor's offset, falling back to today's date when every
+anchor is itself a draft. Pass `--provisional-date` to override.
+
+```bash
+# KeyDate.date = Lease.start_date + 90 days (point in time)
+kestrel abstractions changes create 42 \
+  --action create --target-type KeyDate --sub-object-group new \
+  --target-field date \
+  --anchor "target_type=Lease,target_field=start_date,offset_days=90,inclusive=false" \
+  --cite-block 4280
+
+# Multi-anchor: earliest of (Handover + 3 months) or Store Open
+kestrel abstractions changes create 42 \
+  --action create --target-type Lease --target-field rent_commencement_date \
+  --anchor "target_type=KeyDate,target_field=date,sub_object_group=$HANDOVER_GROUP,offset_months=3,inclusive=false" \
+  --anchor "target_type=KeyDate,target_field=date,sub_object_group=$STORE_OPEN_GROUP,offset_months=0,offset_days=0,inclusive=false" \
+  --anchor-resolution earliest_of \
+  --cite-block 4302
+```
+
+Anchor spec keys (comma-separated, no spaces around `=`):
+
+| Key                | Required             | Notes                                                     |
+|--------------------|----------------------|-----------------------------------------------------------|
+| `target_type`      | yes                  | Lease, Property, KeyDate, Expense, LeaseSecurity, SalesRentTerm, Increase |
+| `target_field`     | yes                  | Date column on the anchor record                          |
+| `target_id`        | xor sub_object_group | Use for live records (brownfield).                        |
+| `sub_object_group` | xor target_id        | Use for sibling draft sub-objects in the same abstraction.|
+| `offset_months`    | no (default 0)       | Negative for "before".                                    |
+| `offset_days`      | no (default 0)       |                                                           |
+| `inclusive`        | no (default true)    | Real-estate "term to/from" math. Set false for "N days after". |
+
+### Draft an Increase with `kestrel abstractions increase create`
+
+The dedicated write surface for the opaque Increase target type. Builds the
+multi-key payload, the indexation tier rows, the anchored or absolute
+`effective_date`, and the optional `recurrence` block.
+
+```bash
+# Greenfield draft expense — recurring CPI escalation, anchored to lease start
+RENT_GROUP=$(kestrel abstractions changes new-group 42 --target-type Expense)
+kestrel abstractions changes create 42 \
+  --action create --target-type Expense --sub-object-group "$RENT_GROUP" \
+  --target-field name --payload '{"name":"Base Rent"}' --cite-block 4301:cell=2,1
+# (… plus amount/currency/start_date/end_date sibling fields on $RENT_GROUP …)
+
+kestrel abstractions increase create 42 \
+  --increasable-sub-object-group "$RENT_GROUP" \
+  --type indexation \
+  --inflation-series-id 7 --start-period 2027-01 --end-period 2028-01 \
+  --floor 0 --ceiling 5 \
+  --tier ":4:100" --tier "4::50" \
+  --anchor "target_type=Expense,sub_object_group=$RENT_GROUP,target_field=start_date,offset_months=12,inclusive=false" \
+  --anchor-resolution earliest_of \
+  --recurrence-cadence lease_anniversary \
+  --notes "Annual CPI escalation, 100% to 4%, 50% above" \
+  --cite-block 4350 --cite-block 4351
+
+# Brownfield existing expense — fixed bump on a known date
+kestrel abstractions increase create 42 \
+  --increasable-target-id 17 \
+  --type fixed --fixed-amount 12500 \
+  --effective-date 2027-04-01 \
+  --cite-block 4980
+```
+
+**Parent linkage** — exactly one of:
+
+- `--increasable-sub-object-group <uuid>` — the parent Expense is a sibling
+  draft in the same abstraction (greenfield, or a brownfield-with-new-expense).
+  Pass the Expense's `sub_object_group` UUID. The applier resolves it to the
+  live Expense at go-live time via the same UUID.
+- `--increasable-target-id <expense-id>` — the parent Expense is already live
+  (brownfield, modifying an existing expense's series).
+
+**Effective date** — exactly one of:
+
+- `--effective-date YYYY-MM-DD` (absolute), or
+- `--anchor` (repeatable) + `--anchor-resolution` + optional
+  `--provisional-date`. Identical syntax and semantics to `changes create`'s
+  `--anchor`. The CLI infers `provisional_date` and prints a notice; pass
+  `--provisional-date` to override.
+
+**Indexation tiers** — repeatable `--tier "<lo>:<hi>:<rate>"`:
+
+| Spec        | Meaning                                                        |
+|-------------|----------------------------------------------------------------|
+| `":4:100"`  | open below, capped at 4%, applied at 100%                      |
+| `"4:8:50"`  | between 4% and 8%, applied at 50%                              |
+| `"8::25"`   | above 8% (open above), applied at 25%                          |
+
+Local validation runs before POST: contiguity (each tier's lo equals the
+previous tier's hi), open-above on the last tier, rate in [0, 100]. Empty
+tier list = 100% pass-through of the index change.
+
+**Recurrence** (optional — expanded at go-live, not stored as separate
+draft changes):
+
+- `--recurrence-cadence lease_anniversary` — annual on the lease start anniv.
+- `--recurrence-cadence expense_start_anniversary` — annual on expense start.
+- `--recurrence-cadence january_1` — annual on January 1.
+- `--recurrence-cadence custom --recurrence-interval-amount N --recurrence-interval-unit years|quarters|months`
+
+Anchored effective_date + recurrence is the **star pattern**: every
+recurrence shares the same anchor record with offsets accumulated by
+`interval_amount × occurrence`. One change, N live increases at go-live.
+
+### When does the CLI compute `provisional_date`?
+
+Only when `--anchor` is supplied and `--provisional-date` is omitted. The
+CLI fetches `/anchorable_dates` and:
+
+1. Resolves each anchor's `current_value` and applies the spec's offset
+   (with end-of-month-aware month math, mirroring the server).
+2. Combines candidates via `earliest_of` / `latest_of`.
+3. **Falls back to today** when no anchor has a known `current_value`
+   (every anchor is itself a pending draft). This is the "best guess" the
+   API needs at draft time so column-level NOT-NULL invariants hold; phase
+   2 of go-live overwrites with the authoritative resolution.
+
+When the inferred date matters, validate it with `--provisional-date`. The
+CLI prints a breadcrumb whenever it inferred the value.
 
 ## Common Workflows
 

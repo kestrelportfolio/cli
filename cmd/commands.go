@@ -350,6 +350,11 @@ func commandCatalog() []CommandCategory {
 					Description: "List source documents attached to an abstraction",
 					Flags:       []string{"--page"},
 				},
+				{
+					Name:        "abstractions anchorable-dates",
+					Usage:       "kestrel abstractions anchorable-dates <abstraction-id>",
+					Description: "List valid anchor refs for relative-date payloads (live + draft + primary-target)",
+				},
 			},
 		},
 		{
@@ -368,9 +373,15 @@ func commandCatalog() []CommandCategory {
 				},
 				{
 					Name:        "abstractions changes create",
-					Usage:       "kestrel abstractions changes create <abstraction-id> --action ... --target-type ... --payload ... [--cite-block BLOCK[:chars=S-E|:cell=R,C]]",
-					Description: "Create or upsert a staged change. --cite-block is the shortcut for block-ref citations",
-					Flags:       []string{"--action", "--target-type", "--target-id", "--target-field", "--sub-object-group", "--parent-change-id", "--revised-from-id", "--payload", "--source-links", "--cite-block"},
+					Usage:       "kestrel abstractions changes create <abstraction-id> --action ... --target-type ... --payload ... [--cite-block BLOCK[:chars=S-E|:cell=R,C]] [--anchor SPEC ... --anchor-resolution earliest_of|latest_of [--provisional-date YYYY-MM-DD]]",
+					Description: "Create or upsert a staged change. --cite-block shortcuts block-ref citations; --anchor builds a relative-date payload around --target-field",
+					Flags:       []string{"--action", "--target-type", "--target-id", "--target-field", "--sub-object-group", "--parent-change-id", "--revised-from-id", "--payload", "--source-links", "--cite-block", "--anchor", "--anchor-resolution", "--provisional-date"},
+				},
+				{
+					Name:        "abstractions increase create",
+					Usage:       "kestrel abstractions increase create <abstraction-id> --increasable-sub-object-group UUID|--increasable-target-id N --type fixed|percentage|indexation [type-flags] (--effective-date YYYY-MM-DD | --anchor SPEC ...) --cite-block BLOCK [--recurrence-cadence ... ] [--notes ...]",
+					Description: "Draft an Increase (rent escalation) abstraction change — opaque target type with multi-key payload, indexation tiers, and recurrence",
+					Flags:       []string{"--increasable-sub-object-group", "--increasable-target-id", "--type", "--effective-date", "--anchor", "--anchor-resolution", "--provisional-date", "--fixed-amount", "--percentage", "--inflation-series-id", "--start-period", "--end-period", "--floor", "--ceiling", "--tier", "--recurrence-cadence", "--recurrence-interval-amount", "--recurrence-interval-unit", "--notes", "--cite-block", "--source-links", "--parent-change-id", "--revised-from-id"},
 				},
 				{
 					Name:        "abstractions changes create-batch",
