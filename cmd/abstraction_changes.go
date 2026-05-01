@@ -14,26 +14,39 @@ import (
 )
 
 type abstractionChange struct {
-	ID                 int                      `json:"id"`
-	Action             string                   `json:"action"`
-	TargetType         string                   `json:"target_type"`
-	TargetField        *string                  `json:"target_field"`
-	TargetID           *int                     `json:"target_id"`
-	Payload            json.RawMessage          `json:"payload"`
-	State              string                   `json:"state"`
-	Source             string                   `json:"source"`
-	SubObjectGroup     *string                  `json:"sub_object_group"`
-	ParentChangeID     *int                     `json:"parent_change_id"`
-	RevisedFromID      *int                     `json:"revised_from_id"`
-	OwnerID            *int                     `json:"owner_id"`
-	ReviewedByID       *int                     `json:"reviewed_by_id"`
-	ReviewedAt         *string                  `json:"reviewed_at"`
-	AppliedAt          *string                  `json:"applied_at"`
-	RejectionReason    *string                  `json:"rejection_reason"`
-	FieldMetadata      json.RawMessage          `json:"field_metadata,omitempty"`
-	SourceLinks        json.RawMessage          `json:"source_links,omitempty"`
-	SourceLinksPreview []abstractionLinkPreview `json:"source_links_preview,omitempty"`
-	CreatedAt          string                   `json:"created_at"`
+	ID                     int                      `json:"id"`
+	Action                 string                   `json:"action"`
+	TargetType             string                   `json:"target_type"`
+	TargetField            *string                  `json:"target_field"`
+	TargetID               *int                     `json:"target_id"`
+	Payload                json.RawMessage          `json:"payload"`
+	State                  string                   `json:"state"`
+	Source                 string                   `json:"source"`
+	SubObjectGroup         *string                  `json:"sub_object_group"`
+	ParentChangeID         *int                     `json:"parent_change_id"`
+	RevisedFromID          *int                     `json:"revised_from_id"`
+	OwnerID                *int                     `json:"owner_id"`
+	ReviewedByID           *int                     `json:"reviewed_by_id"`
+	ReviewedAt             *string                  `json:"reviewed_at"`
+	AppliedAt              *string                  `json:"applied_at"`
+	RejectionReason        *string                  `json:"rejection_reason"`
+	FieldMetadata          json.RawMessage          `json:"field_metadata,omitempty"`
+	SourceLinks            json.RawMessage          `json:"source_links,omitempty"`
+	SourceLinksPreview     []abstractionLinkPreview `json:"source_links_preview,omitempty"`
+	RelativeDateResolution *relativeDateResolution  `json:"relative_date_resolution,omitempty"`
+	CreatedAt              string                   `json:"created_at"`
+}
+
+// relativeDateResolution mirrors the server's live render of an anchor
+// formula. Present only when the change carries a RelativeDatePayload.
+// Echoing this back to the agent right after a successful POST is the
+// fastest sanity check on a freshly-drafted anchor — a malformed anchor
+// that slipped past validation shows up as a formula like "30 days after ."
+// (no anchor label) and the agent can re-draft within the same turn
+// instead of finding out at workspace render or go-live.
+type relativeDateResolution struct {
+	Formula       string  `json:"formula"`
+	ResolvedValue *string `json:"resolved_value"`
 }
 
 type abstractionLinkPreview struct {
@@ -991,10 +1004,11 @@ func renderChangeResult(env *api.Envelope, isCreate bool) error {
 		printer.FinishEnvelope(env)
 		return nil
 	}
+	var c abstractionChange
+	parseErr := json.Unmarshal(env.Data, &c)
 	if !printer.IsStructured() {
-		var c abstractionChange
-		if err := json.Unmarshal(env.Data, &c); err != nil {
-			return fmt.Errorf("parsing change: %w", err)
+		if parseErr != nil {
+			return fmt.Errorf("parsing change: %w", parseErr)
 		}
 		target := c.TargetType
 		if c.TargetID != nil {
@@ -1009,10 +1023,16 @@ func renderChangeResult(env *api.Envelope, isCreate bool) error {
 			{"Source", c.Source},
 			{"Sub-object group", deref(c.SubObjectGroup)},
 		})
+		// Echo the server-rendered anchor formula immediately when the change
+		// carries a relative-date payload. The agent's fastest sanity check
+		// on a freshly-drafted anchor — a malformed anchor that slipped past
+		// validation renders as a partial formula (e.g. "30 days after .")
+		// and the agent can re-draft within the same turn.
+		if c.RelativeDateResolution != nil {
+			renderRelativeDateResolution(c.RelativeDateResolution)
+		}
 	}
-	// Pull ID for summary (both modes want it).
-	var c abstractionChange
-	if err := json.Unmarshal(env.Data, &c); err == nil {
+	if parseErr == nil {
 		if isCreate {
 			printer.Summary(fmt.Sprintf("Change #%d staged", c.ID))
 		} else {
@@ -1021,6 +1041,26 @@ func renderChangeResult(env *api.Envelope, isCreate bool) error {
 	}
 	printer.FinishEnvelope(env)
 	return nil
+}
+
+// renderRelativeDateResolution prints the server-rendered formula and
+// resolved value for a relative-date change. Both fields come straight
+// from `relative_date_resolution` on the change response — the CLI does
+// no interpretation of the formula content. If a malformed-anchor case
+// reaches the response, the fix belongs in the server's validator or
+// formula renderer, not in client-side string sniffing.
+func renderRelativeDateResolution(r *relativeDateResolution) {
+	if r.Formula == "" && r.ResolvedValue == nil {
+		return
+	}
+	resolved := "(resolves once anchor is set)"
+	if r.ResolvedValue != nil && *r.ResolvedValue != "" {
+		resolved = *r.ResolvedValue
+	}
+	printer.Detail([][]string{
+		{"Anchor", r.Formula},
+		{"Resolves to", resolved},
+	})
 }
 
 func init() {
@@ -1036,8 +1076,11 @@ func init() {
 	abstractionChangesCreateCmd.Flags().IntVar(&changesCreateRevisedFromID, "revised-from-id", 0, "Change ID this one supersedes (auto-linked to rejected predecessors if omitted)")
 	abstractionChangesCreateCmd.Flags().StringVar(&changesCreatePayloadInput, "payload", "", `Attribute payload as JSON, @file, or - for stdin (required unless --anchor is used)`)
 	abstractionChangesCreateCmd.Flags().StringVar(&changesCreateSourceLinksInput, "source-links", "", `Source links array as JSON, @file, or - for stdin`)
-	abstractionChangesCreateCmd.Flags().StringSliceVar(&changesCreateCiteBlocks, "cite-block", nil, `Cite a parsed block. Repeatable. Formats: <block-id>, <block-id>:chars=S-E, <block-id>:cell=R,C`)
-	abstractionChangesCreateCmd.Flags().StringSliceVar(&changesCreateAnchorSpecs, "anchor", nil, `Anchor spec for a relative-date payload. Repeatable. Format: target_type=...,target_field=...,[target_id=N|sub_object_group=UUID,]offset_months=N,offset_days=N,inclusive=true|false. Mutually exclusive with --payload; requires --target-field.`)
+	// StringArrayVar (not StringSliceVar) — these specs embed commas
+	// (cell=R,C; comma-separated anchor key=values), and StringSliceVar
+	// auto-splits on commas inside a single quoted value.
+	abstractionChangesCreateCmd.Flags().StringArrayVar(&changesCreateCiteBlocks, "cite-block", nil, `Cite a parsed block. Repeatable. Formats: <block-id>, <block-id>:chars=S-E, <block-id>:cell=R,C`)
+	abstractionChangesCreateCmd.Flags().StringArrayVar(&changesCreateAnchorSpecs, "anchor", nil, `Anchor spec for a relative-date payload. Repeatable; pass once per anchor (commas inside one --anchor are preserved). Format: target_type=...,target_field=...,[target_id=N|sub_object_group=UUID,]offset_months=N,offset_days=N,inclusive=true|false. Mutually exclusive with --payload; requires --target-field.`)
 	abstractionChangesCreateCmd.Flags().StringVar(&changesCreateAnchorResolution, "anchor-resolution", "", `earliest_of|latest_of (defaults to earliest_of for single-anchor; required for multi-anchor)`)
 	abstractionChangesCreateCmd.Flags().StringVar(&changesCreateProvisionalDate, "provisional-date", "", `Override the CLI-computed provisional_date (YYYY-MM-DD)`)
 

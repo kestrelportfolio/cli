@@ -9,6 +9,29 @@ import (
 	"time"
 )
 
+// validAnchorTargetTypes mirrors AbstractionRelativeDatePayload::DATE_BEARING_FIELDS
+// on the server. Pre-validating here turns a 422 round-trip into an
+// immediate, actionable usage error and catches typos like "Leases" or
+// "Key_Date" at parse time.
+var validAnchorTargetTypes = map[string]bool{
+	"Lease":         true,
+	"Property":      true,
+	"KeyDate":       true,
+	"Expense":       true,
+	"LeaseSecurity": true,
+	"SalesRentTerm": true,
+	"Increase":      true,
+}
+
+// primaryTargetAnchorTypes are the only target types that may anchor without
+// a target_id or sub_object_group — they refer to the abstraction's primary
+// Lease/Property record. Anchors of any other type MUST disambiguate via
+// either target_id (live record) or sub_object_group (sibling draft).
+var primaryTargetAnchorTypes = map[string]bool{
+	"Lease":    true,
+	"Property": true,
+}
+
 // anchorSpec is the parsed form of a single --anchor flag value.
 //
 // Spec syntax (comma-separated key=value pairs, no spaces around `=`):
@@ -94,11 +117,17 @@ func parseAnchorSpec(raw string) (*anchorSpec, error) {
 	if spec.TargetType == "" {
 		return nil, fmt.Errorf("--anchor %q: target_type is required", raw)
 	}
+	if !validAnchorTargetTypes[spec.TargetType] {
+		return nil, fmt.Errorf("--anchor %q: target_type must be one of Lease, Property, KeyDate, Expense, LeaseSecurity, SalesRentTerm, Increase (got %q)", raw, spec.TargetType)
+	}
 	if spec.TargetField == "" {
 		return nil, fmt.Errorf("--anchor %q: target_field is required", raw)
 	}
 	if spec.TargetID != nil && spec.SubObjectGroup != nil {
 		return nil, fmt.Errorf("--anchor %q: target_id and sub_object_group are mutually exclusive", raw)
+	}
+	if !primaryTargetAnchorTypes[spec.TargetType] && spec.TargetID == nil && spec.SubObjectGroup == nil {
+		return nil, fmt.Errorf("--anchor %q: target_type %s is not a primary-target type — it requires either target_id (live record) or sub_object_group (sibling draft change). Only Lease and Property anchors may omit both.", raw, spec.TargetType)
 	}
 	return spec, nil
 }
@@ -176,6 +205,28 @@ func buildRelativePayload(absID, resolution string, anchors []*anchorSpec, provi
 		return nil, "", false, fmt.Errorf("--anchor-resolution: must be earliest_of or latest_of (got %q)", resolution)
 	}
 
+	// Always fetch anchorable_dates so we can validate every --anchor spec
+	// resolves to a real option *before* posting. This catches typo'd
+	// sub_object_group UUIDs (which the server defers to apply-time, so the
+	// API would otherwise silently accept a malformed anchor that never
+	// resolves at go-live), unanchorable target_field/type combos, and
+	// missing draft siblings.
+	//
+	// An empty options list is a valid response — it means the org has
+	// date_dependencies disabled. We let the API return a clearer error in
+	// that case rather than fabricating one here.
+	options, err := fetchAnchorableDates(absID)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("looking up anchorable_dates for validation: %w", err)
+	}
+	if len(options) > 0 {
+		for _, a := range anchors {
+			if matchAnchorOption(a, options) == nil {
+				return nil, "", false, anchorNotFoundError(absID, a, options)
+			}
+		}
+	}
+
 	// Provisional date: caller wins, otherwise compute from anchors.
 	var provisional string
 	var inferred bool
@@ -185,10 +236,6 @@ func buildRelativePayload(absID, resolution string, anchors []*anchorSpec, provi
 		}
 		provisional = provisionalOverride
 	} else {
-		options, err := fetchAnchorableDates(absID)
-		if err != nil {
-			return nil, "", false, fmt.Errorf("looking up anchor current_values for provisional date: %w", err)
-		}
 		date, src := guessProvisionalDate(anchors, resolution, options)
 		provisional = date
 		inferred = true
@@ -260,6 +307,46 @@ func guessProvisionalDate(specs []*anchorSpec, resolution string, options []anch
 		picked = candidates[0]
 	}
 	return picked.Format("2006-01-02"), "from_anchors"
+}
+
+// anchorNotFoundError builds a clear, actionable error when an --anchor spec
+// fails to match any AnchorOption returned from /anchorable_dates. Lists
+// candidates of the same target_type when present, and points at the
+// discovery command otherwise.
+func anchorNotFoundError(absID string, spec *anchorSpec, options []anchorOption) error {
+	identity := fmt.Sprintf("target_type=%s,target_field=%s", spec.TargetType, spec.TargetField)
+	if spec.TargetID != nil {
+		identity += fmt.Sprintf(",target_id=%d", *spec.TargetID)
+	}
+	if spec.SubObjectGroup != nil {
+		identity += fmt.Sprintf(",sub_object_group=%s", *spec.SubObjectGroup)
+	}
+
+	var candidates []string
+	for _, opt := range options {
+		if opt.TargetType != spec.TargetType {
+			continue
+		}
+		ref := "primary-target"
+		switch {
+		case opt.TargetID != nil:
+			ref = fmt.Sprintf("target_id=%d", *opt.TargetID)
+		case opt.SubObjectGroup != nil:
+			ref = "sub_object_group=" + *opt.SubObjectGroup
+		}
+		candidates = append(candidates, fmt.Sprintf("- target_field=%s,%s  (%s)", opt.TargetField, ref, opt.Label))
+	}
+
+	// Build with concatenation, not a second Sprintf pass — anchor labels
+	// can contain user-configured field captions which may include literal
+	// `%` characters, and a second Sprintf would treat those as verbs.
+	msg := "--anchor: no anchor option found matching " + identity + " on this abstraction"
+	if len(candidates) > 0 {
+		msg += "\n\nAvailable " + spec.TargetType + " anchors on this abstraction:\n" + strings.Join(candidates, "\n")
+	} else {
+		msg += "\n\nNo anchors of type " + spec.TargetType + " exist on this abstraction yet. Run `kestrel abstractions anchorable-dates " + absID + "` to see all valid options."
+	}
+	return fmt.Errorf("%s", msg)
 }
 
 // matchAnchorOption finds the AnchorOption that corresponds to an anchor spec.

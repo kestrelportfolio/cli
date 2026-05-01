@@ -520,7 +520,8 @@ func init() {
 	c.Flags().IntVar(&increaseCreateIncreasableTargetID, "increasable-target-id", 0, "Parent Expense's live record ID (brownfield)")
 	c.Flags().StringVar(&increaseCreateType, "type", "", "fixed | percentage | indexation (required)")
 	c.Flags().StringVar(&increaseCreateEffectiveDate, "effective-date", "", "Effective date (YYYY-MM-DD). Mutually exclusive with --anchor.")
-	c.Flags().StringSliceVar(&increaseCreateAnchorSpecs, "anchor", nil, "Anchor spec for an anchored effective_date. Repeatable. Same syntax as `changes create --anchor`.")
+	// StringArrayVar — anchor specs embed commas; StringSliceVar would split.
+	c.Flags().StringArrayVar(&increaseCreateAnchorSpecs, "anchor", nil, "Anchor spec for an anchored effective_date. Repeatable; pass once per anchor (commas inside one --anchor are preserved). Same syntax as `changes create --anchor`.")
 	c.Flags().StringVar(&increaseCreateAnchorResolution, "anchor-resolution", "", "earliest_of|latest_of (defaults to earliest_of for single-anchor; required for multi-anchor)")
 	c.Flags().StringVar(&increaseCreateProvisionalDate, "provisional-date", "", "Override the CLI-computed provisional_date (YYYY-MM-DD)")
 	c.Flags().StringVar(&increaseCreateFixedAmount, "fixed-amount", "", "New amount (--type fixed)")
@@ -536,7 +537,8 @@ func init() {
 	c.Flags().StringVar(&increaseCreateRecurrenceIntervalUnit, "recurrence-interval-unit", "", "Custom cadence interval unit: years|quarters|months")
 	c.Flags().StringVar(&increaseCreateNotes, "notes", "", "Notes carried on the increase")
 	c.Flags().StringVar(&increaseCreateSourceLinksInput, "source-links", "", `Source links array as JSON, @file, or - for stdin`)
-	c.Flags().StringSliceVar(&increaseCreateCiteBlocks, "cite-block", nil, `Cite a parsed block. Repeatable. Formats: <block-id>, <block-id>:chars=S-E, <block-id>:cell=R,C`)
+	// StringArrayVar — cell=R,C narrowing has a comma; StringSliceVar would split.
+	c.Flags().StringArrayVar(&increaseCreateCiteBlocks, "cite-block", nil, `Cite a parsed block. Repeatable. Formats: <block-id>, <block-id>:chars=S-E, <block-id>:cell=R,C`)
 	c.Flags().IntVar(&increaseCreateParentChangeID, "parent-change-id", 0, "Parent change this one depends on")
 	c.Flags().IntVar(&increaseCreateRevisedFromID, "revised-from-id", 0, "Change ID this one supersedes (auto-linked to rejected predecessors if omitted)")
 

@@ -67,9 +67,8 @@ web UI before it goes live.
    document doesn't teach, for example:
    - "If the lease is silent on this clause, write 'Lease is silent for
      this clause' rather than skipping it."
-   - "Use absolute dates; resolve relative phrases like '30 days after
-     delivery' to a concrete date."
    - "Include suffixes like LLC, Inc. in the tenant name."
+   - "Treat percent-of-sales triggers as cumulative across the lease year."
 
    Skipping a required field because the document doesn't address it
    cleanly is almost never correct — the template usually wants an
@@ -77,21 +76,60 @@ web UI before it goes live.
    (or `templates schema <tpl-id>` before create) and scan the Guidance
    block before drafting values. In `--agent` / `--json` mode the
    `guidance` string lives on each field-entry in the JSON response.
-5. **Prefer block-ref citations over coord rectangles.** When the document has
+5. **For derived dates, anchor — don't resolve.** Lease language is
+   relational by default ("3 months after handover", "5 years from rent
+   commencement", "180 days before expiration"). When a date in the
+   contract is described as an offset from another date, draft it
+   anchored via `--anchor`, **not** as a literal date. Resolve to a
+   literal date only for primitive events (a stated calendar date, a
+   signing date, an actual that's already known). The schema's
+   `relative_supported: true` flag marks fields that accept anchors;
+   if the doc describes that field relationally, anchor.
+
+   *Why this matters:* anchoring preserves the contract's relational
+   structure — when an upstream date later shifts (e.g. the actual
+   possession date moves three weeks), every dependent date cascades
+   automatically. Resolving offsets to literals at draft time creates
+   silent double-administration: the reviewer fixes one date, but every
+   downstream literal stays stale until someone manually re-derives it.
+
+   Trigger phrases that mean "anchor this":
+   - "after / before / from / within N days|weeks|months|years of …"
+   - "the Nth anniversary of …", "Nth of the month following …"
+   - "upon / following / commencing on …" (when the trigger is itself a
+     date field on the lease)
+   - any "term of N years" — the end_date is anchored to start_date.
+
+   Sketch:
+   ```bash
+   # Lease end_date = start_date + 10 years (real-estate inclusive offset)
+   kestrel abstractions changes create $ABS \
+     --action update --target-type Lease --target-field end_date \
+     --anchor "target_type=Lease,target_field=start_date,offset_months=120,inclusive=true" \
+     --cite-block <id>
+
+   # Renewal notice = 180 days before expiration (point-in-time, negative)
+   kestrel abstractions changes create $ABS \
+     --action create --target-type KeyDate --sub-object-group new \
+     --target-field date \
+     --anchor "target_type=Lease,target_field=end_date,offset_days=-180,inclusive=false" \
+     --cite-block <id>
+   ```
+6. **Prefer block-ref citations over coord rectangles.** When the document has
    been parsed, cite by `document_block_id` — the server derives coords +
    `cited_text` from the parse. Narrow to a substring with `char_start`/`end`
    or to a specific table cell with `table_cell_row`/`col`. Use coord mode
    only when the parse hasn't rendered the thing you need to cite.
-6. **Wait for parse before citing blocks.** Parses are triggered on attach,
+7. **Wait for parse before citing blocks.** Parses are triggered on attach,
    not upload. After `add-doc`, call `documents parse <doc-id> --wait` (or
    pass `--wait-parse` to `add-doc`) before you start reading blocks. Status
    `complete` means blocks are queryable; `failed` means fall back to coord
    mode or a different document.
-7. **Use `--agent` for scripting**, `--json` when you need the envelope
+8. **Use `--agent` for scripting**, `--json` when you need the envelope
    (breadcrumbs, meta), `--quiet`/no flag for human display.
-8. **Check auth before anything else.** Exit code 3 means "no token or
+9. **Check auth before anything else.** Exit code 3 means "no token or
    expired". Run `kestrel login` to fix.
-9. **Dedup is automatic on pending api-sourced changes.** Re-POSTing
+10. **Dedup is automatic on pending api-sourced changes.** Re-POSTing
    `changes create` with the same
    `(action, target_type, target_field, sub_object_group)` tuple updates the
    existing pending api-sourced change and returns 200 (not 201). Payload is
@@ -102,7 +140,7 @@ web UI before it goes live.
    revised_from chain and the audit trail, so PATCH/DELETE refuse with 422.
    To change a rejected value, POST a new create; `revised_from_id`
    auto-links to the rejected predecessor.
-10. **Sub-object fields group via a server-minted UUID.** Every new sub-object
+11. **Sub-object fields group via a server-minted UUID.** Every new sub-object
     instance (a new KeyDate, Expense, LeaseClause, etc.) is identified by a
     `sub_object_group` UUID that must be issued by the server. Client-
     generated UUIDs are rejected with `sub_object_group_unknown`. Two ways
@@ -119,7 +157,7 @@ web UI before it goes live.
     with a different target_type hits `sub_object_group_target_type_mismatch`.
     Property/Lease creates MUST NOT carry a group — they write directly
     against the abstraction's root record.
-11. **Channel-lock: one pending non-default change per tuple, per channel.**
+12. **Channel-lock: one pending non-default change per tuple, per channel.**
     Every field has a pending slot on `(action, target_type, target_field,
     sub_object_group)`. At most one `pending` non-default change can occupy
     it at a time; the source of that change identifies which channel holds
@@ -134,7 +172,7 @@ web UI before it goes live.
       rejected + new change linked via `revised_from_id`). Conditional
       sub-object scaffolds (e.g. pre-filled "Lease Expiration" KeyDate) are
       `default`-sourced, so agents can overwrite them cleanly.
-12. **Stream single creates as you find fields; batch only for bulk imports.**
+13. **Stream single creates as you find fields; batch only for bulk imports.**
     When reading a document and extracting fields one at a time, POST each
     change the moment you've confirmed the citation — don't hoard them into
     a batch. Streaming gives the reviewer live progress, preserves partial
@@ -143,7 +181,7 @@ web UI before it goes live.
     when you *already have* the whole set assembled from another source
     (CSV import, cross-abstraction copy, programmatic translation). Max 500
     items per batch when you do use it.
-13. **One payload key per change. Always — except for opaque target types.**
+14. **One payload key per change. Always — except for opaque target types.**
     The server rejects multi-key payloads on any create or update with 422
     `payload_extra_keys` for every target_type *except* the explicitly
     opaque ones — currently `Increase`, where one change carries the whole
@@ -162,7 +200,7 @@ web UI before it goes live.
     date dependencies" below) — it constructs the opaque payload and
     handles the indexation tier shape, anchored effective_date, and
     recurrence flags.
-14. **Don't download the PDF to read it yourself.** When a document has a
+15. **Don't download the PDF to read it yourself.** When a document has a
     complete parse, `documents search "q"` or `documents blocks --type heading` is
     faster, produces block-anchored citations the abstraction-review flow
     depends on, and costs a fraction of the tokens of pulling raw bytes.
@@ -284,42 +322,50 @@ Want to change lease data?
 ├── 5. Discover what fields are expected
 │   └── kestrel abstractions schema <abs-id> --agent
 ├── 6. Draft changes — stream one per field as you confirm each citation
-│   ├── Scalar update: --action update --target-type Lease --target-id L --payload '{…}' --cite-block <block-id>
+│   ├── Date field?
+│   │   ├── Doc says "after / before / from / within N days|months|years of …"
+│   │   │   → ANCHOR. add --anchor "target_type=…,target_field=…,…" + --anchor-resolution
+│   │   │     (pre-discover anchors with `abstractions anchorable-dates <abs-id>`;
+│   │   │      CLI computes provisional_date from anchor current_values, falls back
+│   │   │      to today when every anchor is itself a draft)
+│   │   └── Doc states a literal calendar date (signing date, statutory deadline, etc.)
+│   │       → LITERAL: --payload '{"<field>":"YYYY-MM-DD"}'
+│   ├── Scalar (non-date) update: --action update --target-type Lease --target-id L --payload '{…}' --cite-block <block-id>
 │   ├── Substring citation: --cite-block <block-id>:chars=14-72
 │   ├── Table cell citation: --cite-block <block-id>:cell=2,1
 │   ├── Sub-object create: --action create --target-type KeyDate --sub-object-group new --payload '{…}' --cite-block <block-id>
-│   ├── Anchored date (relative): add --anchor "target_type=…,target_field=…,…" + --anchor-resolution
-│   │   (CLI infers provisional_date; pre-discover anchors with `abstractions anchorable-dates <abs-id>`)
 │   ├── Increase / rent escalation: kestrel abstractions increase create <abs-id> --increasable-sub-object-group $G --type fixed|percentage|indexation …
 │   └── Bulk import path (only when you already have the whole set):
 │       kestrel abstractions changes create-batch <abs-id> --file @batch.json
 └── 7. (Human completes in web UI: review, approve, go-live)
 ```
 
-## Increases and date dependencies
+## Date dependencies (anchoring)
 
-Two related features that go beyond plain per-field abstraction changes:
+A date field can be drafted as a literal calendar date (`"2026-04-01"`)
+**or** anchored to another date in the same abstraction (or a live record
+on the target Property/Lease). Anchoring is the default authoring mode
+when the source contract describes a date relationally — see Rule 5.
 
-- **Increases** are rent escalations / amount changes on an Expense. Each
-  one is fixed (new absolute amount), percentage (% step on the prior
-  resolved amount), or indexation (CPI-linked, derived from inflation
-  observations between two periods, optionally tiered and clamped by
-  floor/ceiling). On the abstraction side they are an **opaque target
-  type**: one `AbstractionChange` carries the whole series spec with
-  `target_field=null` and a multi-key payload. Don't try to draft them
-  one-field-at-a-time — use the dedicated command.
-- **Date dependencies** let a date field anchor to another date in the
-  same abstraction (or a live record on the target Property/Lease). Same
-  change endpoint, but the value position carries a `{mode:"relative",
-  resolution, provisional_date, anchors:[…]}` payload instead of a literal
-  date. Cascade resolves the resolved date at go-live. Increases are also
-  date-dependency-aware — `effective_date` accepts the same relative
-  payload, anchored to the parent Expense's start/end (or the Lease's
-  dates).
+**Why anchor?** Anchoring preserves the contract's relational structure.
+When an upstream date later shifts (e.g. the actual possession date moves
+three weeks), every dependent date cascades automatically — the lease end,
+the rent commencement, the renewal-notice deadline, the percentage-rent
+period boundaries. Resolving offsets to literals at draft time creates
+silent double-administration: the reviewer fixes one date, but every
+downstream literal stays stale until someone manually re-derives it.
 
-Both features require `Organization#date_dependencies_enabled` to be on for
-the org. When it's off, `anchorable-dates` returns an empty list and
-relative-date payloads are rejected.
+**Schema discovery.** Date fields in the schema response carry
+`relative_supported: true` when the org's `date_dependencies_enabled` flag
+is on. Treat that flag as a strong hint: *if the source clause describes
+the date relationally, prefer the anchored payload over a resolved
+literal.* Fields without the flag (or when the org has dependencies
+disabled) take literal dates only.
+
+Supported anchorable target types: `Lease`, `Expense`, `KeyDate`,
+`LeaseSecurity`, `SalesRentTerm`, and `Increase.effective_date`. Lease
+anchor fields must appear in the org's `LeaseDateAnchorConfig` (you'll
+see them in `anchorable-dates` if so).
 
 ### Discover available anchor refs first
 
@@ -360,7 +406,23 @@ kestrel abstractions changes create 42 \
   --anchor "target_type=Lease,target_field=start_date,offset_days=90,inclusive=false" \
   --cite-block 4280
 
-# Multi-anchor: earliest of (Handover + 3 months) or Store Open
+# Multi-anchor: earliest of (Handover + 3 months) or Store Open.
+#
+# Sibling existence is enforced server-side at draft time, so the two
+# KeyDate groups must each have at least one non-rejected field change
+# in the abstraction BEFORE the anchored Lease change is POSTed.
+# Typically that's the `name` field of each KeyDate.
+HANDOVER_GROUP=$(kestrel abstractions changes new-group 42 --target-type KeyDate)
+kestrel abstractions changes create 42 \
+  --action create --target-type KeyDate --sub-object-group "$HANDOVER_GROUP" \
+  --target-field name --payload '{"name":"Handover"}' --cite-block 4300
+
+STORE_OPEN_GROUP=$(kestrel abstractions changes new-group 42 --target-type KeyDate)
+kestrel abstractions changes create 42 \
+  --action create --target-type KeyDate --sub-object-group "$STORE_OPEN_GROUP" \
+  --target-field name --payload '{"name":"Store Open"}' --cite-block 4301
+
+# Now the anchors resolve — sibling existence check passes for both groups.
 kestrel abstractions changes create 42 \
   --action create --target-type Lease --target-field rent_commencement_date \
   --anchor "target_type=KeyDate,target_field=date,sub_object_group=$HANDOVER_GROUP,offset_months=3,inclusive=false" \
@@ -380,6 +442,84 @@ Anchor spec keys (comma-separated, no spaces around `=`):
 | `offset_months`    | no (default 0)       | Negative for "before".                                    |
 | `offset_days`      | no (default 0)       |                                                           |
 | `inclusive`        | no (default true)    | Real-estate "term to/from" math. Set false for "N days after". |
+
+**Local validation runs before the API call:**
+
+- `target_type` must be one of the seven supported types (Lease, Property,
+  KeyDate, Expense, LeaseSecurity, SalesRentTerm, Increase). Typos like
+  "Leases" or "Key_Date" fail at parse time.
+- Non-primary-target types (KeyDate, Expense, LeaseSecurity, SalesRentTerm,
+  Increase) **must** carry either `target_id` or `sub_object_group`. Only
+  Lease and Property anchors may omit both (they refer to the abstraction's
+  primary target).
+- Every anchor is cross-checked against `GET /anchorable_dates`. A typo'd
+  `sub_object_group` UUID, an unanchorable `target_field` for the chosen
+  type, or a Lease anchor field that isn't in the org's
+  `LeaseDateAnchorConfig` all fail before POST with the list of valid
+  candidates as a hint.
+
+**Don't bypass `--anchor` with `--payload` for relative dates.** The raw
+JSON path skips every check above. If the documented `--anchor` syntax
+fails for you, that's a bug — open an issue rather than working around
+it. Common gotchas that *aren't* bugs: wrap the spec in quotes (it
+contains commas), use `target_type=...,target_field=...` (note the snake
+case — not `targetType`), and pass one `--anchor` flag per anchor.
+
+### Authoring discipline: create the anchor target first
+
+Sibling existence on `sub_object_group` anchors is enforced **server-side
+at draft time** (`AbstractionRelativeDatePayload.validate!`): a
+`sub_object_group` ref must point at a non-rejected sibling change with
+the same `target_type` already in the abstraction. The check is symmetric
+(any prior sibling field counts) and excludes the change being drafted
+itself, so a change cannot self-anchor.
+
+Practically: **POST at least one field of any sub-object before POSTing
+the change that anchors to it.** Today's natural CLI flow already does
+this — you create a KeyDate's `name` before its `date` — but the
+constraint is now load-bearing and stops anchors from referencing UUIDs
+that never get materialized. If the validator rejects your anchor with
+`sub_object_group X has no sibling Y change`, the fix is to create the
+sibling first; the error message lists the existing groups for reference.
+
+Anchors to **primary-target** Lease/Property fields and to **live
+records** by `target_id` aren't subject to this rule — those references
+are always resolvable.
+
+### When does the CLI compute `provisional_date`?
+
+Only when `--anchor` is supplied and `--provisional-date` is omitted. The
+CLI fetches `/anchorable_dates` and:
+
+1. Resolves each anchor's `current_value` and applies the spec's offset
+   (with end-of-month-aware month math, mirroring the server).
+2. Combines candidates via `earliest_of` / `latest_of`.
+3. **Falls back to today** when no anchor has a known `current_value`
+   (every anchor is itself a pending draft). This is the "best guess" the
+   API needs at draft time so column-level NOT-NULL invariants hold; phase
+   2 of go-live overwrites with the authoritative resolution.
+
+When the inferred date matters, validate it with `--provisional-date`. The
+CLI prints a breadcrumb whenever it inferred the value.
+
+## Increases (rent escalations)
+
+A separate write surface for **opaque** Increase changes — rent
+escalations / amount changes on an Expense. Three increase types:
+fixed (new absolute amount), percentage (% step on the prior resolved
+amount), or indexation (CPI-linked, derived from inflation observations
+between two periods, optionally tiered and clamped by floor/ceiling).
+
+Increase is the API's first opaque target type: one `AbstractionChange`
+carries the whole series spec with `target_field=null` and a multi-key
+payload. **Don't try to draft them one-field-at-a-time** — use the
+dedicated command, which assembles the opaque payload, validates the
+indexation tiers, and handles anchored effective_date + recurrence.
+
+`Increase.effective_date` is itself anchorable (Rule 5 still applies):
+"first escalation 12 months after lease start" should be drafted with
+`--anchor "target_type=Lease,target_field=start_date,offset_months=12"`,
+not as a hard-coded `--effective-date`.
 
 ### Draft an Increase with `kestrel abstractions increase create`
 
@@ -456,22 +596,6 @@ Anchored effective_date + recurrence is the **star pattern**: every
 recurrence shares the same anchor record with offsets accumulated by
 `interval_amount × occurrence`. One change, N live increases at go-live.
 
-### When does the CLI compute `provisional_date`?
-
-Only when `--anchor` is supplied and `--provisional-date` is omitted. The
-CLI fetches `/anchorable_dates` and:
-
-1. Resolves each anchor's `current_value` and applies the spec's offset
-   (with end-of-month-aware month math, mirroring the server).
-2. Combines candidates via `earliest_of` / `latest_of`.
-3. **Falls back to today** when no anchor has a known `current_value`
-   (every anchor is itself a pending draft). This is the "best guess" the
-   API needs at draft time so column-level NOT-NULL invariants hold; phase
-   2 of go-live overwrites with the authoritative resolution.
-
-When the inferred date matters, validate it with `--provisional-date`. The
-CLI prints a breadcrumb whenever it inferred the value.
-
 ## Common Workflows
 
 ### Abstract a lease from a PDF end-to-end
@@ -519,9 +643,23 @@ kestrel abstractions changes create "$ABS" \
   --cite-block 4215 --agent
 
 kestrel abstractions changes create "$ABS" \
-  --action create --target-type Lease \
-  --payload '{"name":"Ground Floor","start_date":"2026-01-01","end_date":"2030-12-31"}' \
+  --action create --target-type Lease --target-field name \
+  --payload '{"name":"Ground Floor"}' \
+  --cite-block 4205 --agent
+
+# start_date is a literal — the doc says "shall commence on January 1, 2026".
+kestrel abstractions changes create "$ABS" \
+  --action create --target-type Lease --target-field start_date \
+  --payload '{"start_date":"2026-01-01"}' \
   --cite-block 4240:chars=14-72 --agent
+
+# end_date is RELATIONAL — the doc says "term of five (5) years from the
+# Commencement Date". Anchor it. inclusive=true gives the real-estate
+# convention (5-year term ending 2030-12-31, not 2031-01-01).
+kestrel abstractions changes create "$ABS" \
+  --action create --target-type Lease --target-field end_date \
+  --anchor "target_type=Lease,target_field=start_date,offset_months=60,inclusive=true" \
+  --cite-block 4242 --agent
 
 # Sub-object — mint one UUID server-side, reuse it for every field in the instance.
 EXPENSE_GROUP=$(kestrel abstractions changes new-group "$ABS" --target-type Expense)
@@ -538,18 +676,59 @@ kestrel abstractions changes create "$ABS" \
   --target-field currency --payload '{"currency":"USD"}' \
   --cite-block 4301:cell=2,3 --agent
 
-# KeyDate — same pattern. Note: for interactive single creates you can also
-# use --sub-object-group new to mint transparently on the first call, then
-# reuse the returned UUID (echoed via breadcrumb) for the siblings.
-KEYDATE_GROUP=$(kestrel abstractions changes new-group "$ABS" --target-type KeyDate)
+# KeyDate — same pattern. Most KeyDates are RELATIONAL: notice deadlines,
+# rent commencement, etc. Here, "Renewal Notice Deadline" is described in
+# the doc as "no later than one hundred eighty (180) days prior to the
+# Expiration Date" → anchor to Lease.end_date with a -180 day offset.
+NOTICE_GROUP=$(kestrel abstractions changes new-group "$ABS" --target-type KeyDate)
 kestrel abstractions changes create "$ABS" \
-  --action create --target-type KeyDate --sub-object-group "$KEYDATE_GROUP" \
-  --target-field name --payload '{"name":"Expiration"}' \
-  --cite-block 4280 --agent
+  --action create --target-type KeyDate --sub-object-group "$NOTICE_GROUP" \
+  --target-field name --payload '{"name":"Renewal Notice Deadline"}' \
+  --cite-block 4290 --agent
 kestrel abstractions changes create "$ABS" \
-  --action create --target-type KeyDate --sub-object-group "$KEYDATE_GROUP" \
-  --target-field date --payload '{"date":"2030-12-31"}' \
-  --cite-block 4280 --agent
+  --action create --target-type KeyDate --sub-object-group "$NOTICE_GROUP" \
+  --target-field date \
+  --anchor "target_type=Lease,target_field=end_date,offset_days=-180,inclusive=false" \
+  --cite-block 4290 --agent
+# When the reviewer corrects the lease start in the web UI, end_date and
+# this notice deadline cascade automatically — no rework, no stale literals.
+
+# Sibling-anchored example — anchoring to ANOTHER sub-object's date, not
+# to a primary-target Lease/Property. The doc says: "Rent Commencement is
+# the earlier of (Handover + 90 days) or Store Opening." Both Handover
+# and Store Opening are KeyDates; Rent Commencement is a Lease field
+# anchored to both.
+#
+# Authoring discipline: the server enforces sibling existence at draft
+# time, so the Handover and Store Opening KeyDates each need at least
+# one non-rejected field change in the abstraction BEFORE the anchored
+# Lease change is POSTed. The natural fix is to POST the `name` field of
+# each KeyDate first; that lands the sibling and unblocks the anchor.
+HANDOVER_GROUP=$(kestrel abstractions changes new-group "$ABS" --target-type KeyDate)
+kestrel abstractions changes create "$ABS" \
+  --action create --target-type KeyDate --sub-object-group "$HANDOVER_GROUP" \
+  --target-field name --payload '{"name":"Handover"}' \
+  --cite-block 4310 --agent
+
+STORE_OPEN_GROUP=$(kestrel abstractions changes new-group "$ABS" --target-type KeyDate)
+kestrel abstractions changes create "$ABS" \
+  --action create --target-type KeyDate --sub-object-group "$STORE_OPEN_GROUP" \
+  --target-field name --payload '{"name":"Store Opening"}' \
+  --cite-block 4311 --agent
+
+# Now both groups have a sibling — the anchored Lease change validates.
+# The CLI echoes the server-rendered formula after a successful POST so
+# you can sanity-check the anchor in the same turn:
+#   Anchor:       earliest of:
+#                 - 90 days after KeyDate: Date — Handover
+#                 - KeyDate: Date — Store Opening
+#   Resolves to:  (resolves once anchor is set)   ← while the date fields are pending
+kestrel abstractions changes create "$ABS" \
+  --action create --target-type Lease --target-field rent_commencement_date \
+  --anchor "target_type=KeyDate,target_field=date,sub_object_group=$HANDOVER_GROUP,offset_days=90,inclusive=false" \
+  --anchor "target_type=KeyDate,target_field=date,sub_object_group=$STORE_OPEN_GROUP,offset_days=0,inclusive=false" \
+  --anchor-resolution earliest_of \
+  --cite-block 4312 --agent
 
 # 9. Audit what landed — list view includes source_links_preview per change.
 #    Output is {data, meta} in --agent mode so you can detect truncation.
@@ -722,6 +901,14 @@ Each `fields[]` entry carries:
 - `default_value` — pre-resolved from the template → FieldConfig → model-
   default cascade. The abstraction already has a `default`-sourced change
   carrying this; echoing it back POST as a no-op via supersede.
+- `relative_supported: true` — present **only on `type: "date"` fields**
+  when the org has `date_dependencies_enabled`. It marks the field as
+  anchorable. **Treat the flag as a recommendation, not just a
+  capability**: when the source clause describes the date relationally
+  ("after / before / from / within N …"), prefer the anchored payload
+  (Rule 5 + the [Date dependencies](#date-dependencies-anchoring) section).
+  Anchoring preserves the cascade on actuals shifting; resolving to a
+  literal at draft time creates silent double-administration later.
 - `guidance` — optional prose from the template author for the drafter.
 
 ### Poll parse status manually

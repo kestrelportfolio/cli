@@ -61,6 +61,11 @@ func TestParseAnchorSpec(t *testing.T) {
 		{name: "unknown key", raw: "target_type=Lease,target_field=start_date,foo=bar", wantErr: true},
 		{name: "duplicate key", raw: "target_type=Lease,target_field=start_date,target_field=end_date", wantErr: true},
 		{name: "no equals", raw: "target_type=Lease,target_field", wantErr: true},
+		{name: "unknown target_type", raw: "target_type=Leases,target_field=start_date", wantErr: true},
+		{name: "non-primary missing id and group", raw: "target_type=KeyDate,target_field=date", wantErr: true},
+		{name: "non-primary with id ok", raw: "target_type=KeyDate,target_field=date,target_id=42"},
+		{name: "non-primary with group ok", raw: "target_type=Expense,target_field=start_date,sub_object_group=abc"},
+		{name: "primary target without id ok", raw: "target_type=Property,target_field=acquired_date"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
